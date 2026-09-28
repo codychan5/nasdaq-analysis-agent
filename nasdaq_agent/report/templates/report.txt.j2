@@ -1,0 +1,46 @@
+{# nasdaq_agent/report/templates/report.txt.j2 #}
+NASDAQ top gainer for {{ ctx.session_date }} ({{ ctx.session_label }})
+{{ ctx.symbol }}{% if ctx.company %} ({{ ctx.company }}){% endif %}: {{ "%+.2f"|format(ctx.pct_change) }}%  prev close {{ "%.2f"|format(ctx.prev_close) }} -> close {{ "%.2f"|format(ctx.close) }}
+Report status: {{ status }}
+{% for p in ctx.problems %}
+  - {{ p }}
+{% endfor %}
+{% for w in ctx.warnings %}
+  - Warning: {{ w }}
+{% endfor %}
+
+Five-day metrics
+  daily changes:        {{ v.daily_changes_pct | map("signed_pct") | join(", ") }}
+  average daily change: {{ "%.2f"|format(v.avg_daily_change_pct) }}%
+  cumulative return:    {{ "%.2f"|format(v.cumulative_return_pct) }}%
+  annualised volatility: {{ "%.2f"|format(v.volatility_annualized_pct) }}%
+  max drawdown:         {{ "%.2f"|format(v.max_drawdown_pct) }}%
+  vs {{ ctx.benchmark_symbol }}:              {{ "%.2f"|format(v.relative_vs_spy_pct) }} pp
+  trend:                {{ v.trend.value }}
+
+Trend
+{{ trend_paragraph }}
+
+News{% if ctx.sentiment_label %} (model-assessed sentiment: {{ ctx.sentiment_label }}{% if ctx.sentiment_score is not none %}, {{ "%.2f"|format(ctx.sentiment_score) }}{% endif %}){% endif %}
+
+{{ news_paragraph }}
+{% for item in news_items %}
+  {{ item.label }} {{ ((item.first_published | headline_time) ~ "  ") if item.first_published else "" }}{{ item.lead.title }}
+{% if item.link %}
+      {{ item.link }}
+{% endif %}
+{% set line = item.source_line %}
+{% if line %}
+      {{ line.label }}: {{ line.headlines | map("source_tag_text") | join("; ") }}
+{% endif %}
+{% if item.note %}
+{{ item.note | wordwrap(94) | indent(6, first=True) }}
+{% endif %}
+{% endfor %}
+
+How this report was made
+{% for b in ctx.background %}
+  {{ b }}
+{% endfor %}
+
+Reference: run {{ ctx.run_id }}{% if ctx.code_hash %}, code {{ ctx.code_hash }}{% endif %}

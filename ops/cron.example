@@ -1,0 +1,41 @@
+# Preferred: `nasdaq-agent schedule` reads its schedule from the environment, so .env sets it:
+#   AGENT_SCHEDULE_CRON="30 16 * * 1-5"         (the default: 16:30, Monday to Friday)
+#   AGENT_SCHEDULE_TIMEZONE=America/New_York    (the default)
+# It keeps running, is time-zone aware on any platform, and skips a trigger whose session was already reported (a
+# market holiday), so the same report is never sent twice. Run it under a process supervisor, or in Docker:
+#   docker compose -f docker/compose.yaml --profile schedule up -d scheduler
+#
+# The crontab line and systemd timer below cannot read .env: their schedule is written in the file itself. They run at
+# 16:30 America/New_York on weekdays; on a holiday the agent reports the last completed session again.
+#
+# CRON_TZ requires cronie (common on RHEL/Fedora, and many modern distros' default
+# cron); Debian and Ubuntu ship vixie-cron, which silently ignores CRON_TZ, so on
+# those distros this line runs in the system's local timezone instead. Either run
+# the host itself in America/New_York, or use the systemd timer alternative below,
+# which is timezone-aware regardless of distro.
+CRON_TZ=America/New_York
+30 16 * * 1-5 cd /path/to/nasdaq_analysis_agent && .venv/bin/nasdaq-agent run >> runs/cron.log 2>&1
+
+# systemd timer alternative (timezone-aware on any distro):
+#
+#   /etc/systemd/system/nasdaq-agent.service
+#     [Unit]
+#     Description=NASDAQ top-gainer analysis agent
+#
+#     [Service]
+#     Type=oneshot
+#     WorkingDirectory=/path/to/nasdaq_analysis_agent
+#     ExecStart=/path/to/nasdaq_analysis_agent/.venv/bin/nasdaq-agent run
+#
+#   /etc/systemd/system/nasdaq-agent.timer
+#     [Unit]
+#     Description=Run the NASDAQ agent at 16:30 America/New_York on weekdays
+#
+#     [Timer]
+#     OnCalendar=Mon..Fri 16:30 America/New_York
+#     Persistent=true
+#
+#     [Install]
+#     WantedBy=timers.target
+#
+#   Enable with: systemctl enable --now nasdaq-agent.timer

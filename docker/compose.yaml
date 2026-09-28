@@ -1,0 +1,88 @@
+# Local dev/test stack: the agent container plus a Mailpit inbox that stands in for a
+# real SMTP relay. There is no Docker-in-Docker service here: the agent runs with
+# AGENT_SANDBOX_BACKEND=subprocess, so the agent container itself -- not a second,
+# Docker-socket-mounted container -- is the outer boundary around the model-written
+# analysis code. Nothing in this file mounts /var/run/docker.sock; that would hand the
+# container root-equivalent access to the host.
+#
+# Usage:
+#   docker compose -f docker/compose.yaml up --build
+#   Every weekday instead, with real mail from the SMTP relay in .env (AGENT_SCHEDULE_CRON sets when; weekdays at
+#   16:30 New York time by default):
+#     docker compose -f docker/compose.yaml --profile schedule up -d --build scheduler
+#   Mailpit UI: http://127.0.0.1:8025
+#   Copy artefacts out of the named volume:
+#     docker compose -f docker/compose.yaml cp agent:/runs ./runs-compose
+#
+# An optional .env at the repo root (copy .env.example) supplies secrets such as
+# provider API keys and AGENT_EMAIL_TO; it is not required for `config` to validate.
+# What the agent and scheduler services share: the image, .env, the sandbox backend, the runs volume and the lockdown.
+# Mail settings differ: the one-shot agent sends to Mailpit, the scheduler through the SMTP relay configured in .env.
+x-agent-service: &agent-service
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile.agent
+  env_file:
+    - path: ../.env
+      required: false
+  environment: &agent-environment
+    AGENT_SANDBOX_BACKEND: subprocess
+    AGENT_ARTIFACTS_DIR: /runs
+  volumes:
+    - runs:/runs
+  # Least privilege: the agent executes model-written code via the subprocess
+  # backend, so it is locked down as if it were the sandbox itself.
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  # Bounds model-written code run by the subprocess backend, since compose has no nested sandbox container.
+  pids_limit: 128
+  mem_limit: 1536m
+  cpus: 2.0
+
+services:
+  mailpit:
+    # Local test inbox only -- never a production mail relay. It accepts any
+    # credentials over plaintext, which is why its ports are bound to loopback only.
+    image: axllent/mailpit:latest
+    environment:
+      - MP_SMTP_AUTH_ACCEPT_ANY=1
+      - MP_SMTP_AUTH_ALLOW_INSECURE=1
+    ports:
+      - "127.0.0.1:8025:8025"
+      - "127.0.0.1:1025:1025"
+
+  agent:
+    <<: *agent-service
+    depends_on: [mailpit]
+    environment:
+      <<: *agent-environment
+      AGENT_SMTP_HOST: mailpit
+      AGENT_SMTP_PORT: "1025"
+      AGENT_SMTP_USERNAME: mailpit
+      AGENT_SMTP_PASSWORD: mailpit
+      AGENT_SMTP_FROM: agent@example.com
+      AGENT_SMTP_STARTTLS: "false"
+
+  # The daily trigger: `nasdaq-agent schedule` runs the agent whenever AGENT_SCHEDULE_CRON fires (read in
+  # AGENT_SCHEDULE_TIMEZONE; 16:30 New York time, Monday to Friday, by default; both can be set in .env) and keeps
+  # running between triggers. It sends real mail through the AGENT_SMTP_* relay in .env (without one, each report is
+  # written to the runs volume's outbox), and Docker restarts it after a crash or a reboot of the Docker daemon.
+  # Started only with the "schedule" profile:
+  #   docker compose -f docker/compose.yaml --profile schedule up -d --build scheduler
+  scheduler:
+    <<: *agent-service
+    command: ["schedule"]
+    restart: unless-stopped
+    profiles: ["schedule"]
+
+volumes:
+  # A named volume, not a host bind mount: the image creates /runs owned by uid 10001
+  # (the non-root `agent` user), and Docker seeds a named volume from the image
+  # directory's contents the first time it is attached. A host bind mount would not be
+  # writable by that uid on Linux.
+  runs:

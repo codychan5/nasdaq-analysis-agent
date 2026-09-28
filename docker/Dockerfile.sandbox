@@ -1,0 +1,10 @@
+# Pin the base by digest before release: python:3.12-slim@sha256:<digest from `docker pull python:3.12-slim`>
+FROM python:3.12-slim
+# pandas and numpy exactly as constraints.txt pins them, their dependencies through the same file: the subprocess
+# sandbox runs model code in the host environment, so replay results must not depend on which backend ran
+# (tests/unit/test_ops_files.py checks the two agree). Bump SANDBOX_IMAGE in runner.py whenever these change.
+COPY constraints.txt /tmp/constraints.txt
+RUN pip install --no-cache-dir -c /tmp/constraints.txt "pandas==2.3.3" "numpy==2.5.3"
+RUN useradd --uid 65534 --no-create-home sandbox || true
+USER 65534
+WORKDIR /work

@@ -1,0 +1,24 @@
+.env
+runs/
+.superpowers/
+__pycache__/
+*.pyc
+*.sqlite
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+.DS_Store
+.gstack/
+# Leftovers of a hard-killed `nasdaq-agent record` (nasdaq_agent/replay/recording.py). A recording
+# stages beside the cassette directory as .<cassette>.recording-<run id> (plus a .previous backup if
+# it died mid-swap) and holds the lock .<cassette>.lock; with the default AGENT_CASSETTE_DIR these are
+# fixtures/.cassettes.recording-... and fixtures/.cassettes.lock. A staging directory has not been
+# secret-scanned, so it must never be committed.
+.*.recording-[0-9]*T[0-9]*Z-[0-9a-f]*
+fixtures/.*.lock
+# Local design material, not published: the spec, the plan, the decisions log and the diagram sources.
+# The published documents are README.md and REPORT.md at the root.
+docs/

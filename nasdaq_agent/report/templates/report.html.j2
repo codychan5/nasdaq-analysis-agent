@@ -1,0 +1,28 @@
+{# nasdaq_agent/report/templates/report.html.j2 #}
+<html><body style="font-family: Helvetica, Arial, sans-serif; color: #111;">
+<h2>NASDAQ top gainer for {{ ctx.session_date }} <small>({{ ctx.session_label }})</small></h2>
+<p><strong>{{ ctx.symbol }}</strong>{% if ctx.company %} ({{ ctx.company }}){% endif %}: <strong>{{ "%+.2f"|format(ctx.pct_change) }}%</strong>,
+prev close {{ "%.2f"|format(ctx.prev_close) }} to close {{ "%.2f"|format(ctx.close) }}</p>
+<div style="margin: 12px 0; padding: 8px 12px; border-left: 4px solid {{ '#b45309' if ctx.problems else '#9ca3af' }}; background: {{ '#fff7ed' if ctx.problems else '#f9fafb' }};">
+<p style="margin: 0;"><strong>Report status:</strong> {{ status }}</p>
+{% if ctx.problems or ctx.warnings %}<ul style="margin: 6px 0 0 0; padding-left: 20px;">{% for p in ctx.problems %}<li>{{ p }}</li>{% endfor %}{% for w in ctx.warnings %}<li><strong>Warning:</strong> {{ w }}</li>{% endfor %}</ul>{% endif %}
+</div>
+{% if ctx.chart_cid %}<p><img src="cid:{{ ctx.chart_cid }}" alt="Adjusted close, last six sessions" width="600"></p>{% endif %}
+<h3>Five-day metrics</h3>
+<table cellpadding="4" style="border-collapse: collapse;">
+<tr><td>Daily changes</td><td>{% for r in v.daily_changes_pct %}{{ "%+.2f"|format(r) }}%{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
+<tr><td>Average daily change</td><td>{{ "%.2f"|format(v.avg_daily_change_pct) }}%</td></tr>
+<tr><td>Cumulative return</td><td>{{ "%.2f"|format(v.cumulative_return_pct) }}%</td></tr>
+<tr><td>Annualised volatility</td><td>{{ "%.2f"|format(v.volatility_annualized_pct) }}%</td></tr>
+<tr><td>Max drawdown</td><td>{{ "%.2f"|format(v.max_drawdown_pct) }}%</td></tr>
+<tr><td>vs {{ ctx.benchmark_symbol }}</td><td>{{ "%.2f"|format(v.relative_vs_spy_pct) }} pp</td></tr>
+<tr><td>Trend</td><td>{{ v.trend.value }}</td></tr>
+</table>
+<h3>Trend</h3><p>{{ trend_paragraph }}</p>
+<h3>News{% if ctx.sentiment_label %} <small>(model-assessed sentiment: {{ ctx.sentiment_label }}{% if ctx.sentiment_score is not none %}, {{ "%.2f"|format(ctx.sentiment_score) }}{% endif %})</small>{% endif %}</h3>
+<p>{{ news_paragraph }}</p>
+<ul style="list-style: none; padding-left: 0;">{% for item in news_items %}{% set lead = item.lead %}<li style="margin-bottom: 8px;"><b>{{ item.label }}</b> {% if item.first_published %}<small>{{ item.first_published | headline_time }}</small> {% endif %}{% set link = item.link %}{% if link %}<a href="{{ link }}">{{ lead.title }}</a>{% else %}{{ lead.title }}{% endif %}{% set line = item.source_line %}{% if line %}<br><small>{{ line.label }}: {% for h in line.headlines %}{% set source_link = h.url | headline_link %}{% if source_link %}<a href="{{ source_link }}">{{ h | source_tag }}</a>{% else %}{{ h | source_tag }}{% endif %}{% if not loop.last %}; {% endif %}{% endfor %}</small>{% endif %}{% if item.note %}<p style="margin: 4px 0 0 0;">{{ item.note }}</p>{% endif %}</li>{% endfor %}</ul>
+<p style="color:#666; font-size: 12px;"><strong>How this report was made</strong><br>
+{% for b in ctx.background %}{{ b }}<br>
+{% endfor %}Reference: run {{ ctx.run_id }}{% if ctx.code_hash %}, code {{ ctx.code_hash }}{% endif %}</p>
+</body></html>

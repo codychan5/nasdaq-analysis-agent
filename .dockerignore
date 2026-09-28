@@ -1,0 +1,25 @@
+# Keeps the Docker build context small and free of secrets. The build context is the
+# repo root (see docker/compose.yaml's `context: ..`).
+
+# Secrets and local env
+.env
+.env.*
+!.env.example
+
+# VCS and local tooling
+.git
+.venv
+.gstack
+
+# Runtime artefacts, caches and test fixtures that must not ship in an image
+runs
+.superpowers
+fixtures/cassettes
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+*.egg-info
+build
+dist
+.DS_Store

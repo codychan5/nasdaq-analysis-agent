@@ -1,0 +1,30 @@
+# systemd service for the daily trigger on a Linux host: keeps `nasdaq-agent schedule` running, which starts a live
+# run whenever AGENT_SCHEDULE_CRON in .env fires (16:30 New York time, Monday to Friday, by default) and skips a
+# session it already reported.
+#
+# Install: replace /path/to/nasdaq_analysis_agent and youruser below, then
+#   sudo cp ops/nasdaq-agent-schedule.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nasdaq-agent-schedule
+# Logs:           journalctl -u nasdaq-agent-schedule -f
+# After editing .env (settings are read once at start):
+#                 sudo systemctl restart nasdaq-agent-schedule
+# To use the Docker sandbox backend, youruser must be able to reach the Docker daemon (the docker group).
+
+[Unit]
+Description=NASDAQ top-gainer agent on the AGENT_SCHEDULE_CRON schedule
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=youruser
+WorkingDirectory=/path/to/nasdaq_analysis_agent
+ExecStart=/path/to/nasdaq_analysis_agent/.venv/bin/nasdaq-agent schedule
+# A crash or an invalid .env restarts it after 30 seconds; a deliberate stop does not.
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

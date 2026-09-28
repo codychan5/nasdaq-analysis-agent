@@ -1,0 +1,148 @@
+from datetime import date, timedelta
+from typing import Literal
+
+from langchain_core.tools import tool
+
+from ...calendar import previous_session_dates
+from ...metrics import DEFINITIONS_TEXT, METRIC_NAMES, REQUIRED_CLOSES
+from ...report.render import source_label
+from ...sandbox.runner import prepare_sandbox_dir
+from ...sources.errors import SourceError, SourceNoData
+from ...sources.models import BarSeries
+from ...validation import check_completeness
+from ..context import HistoryInfo, PriceCheck, RunContext, SourceAttempt
+from .common import Deps, err, ok, log, precondition, record_call
+
+PRICE_CHECK_TOLERANCE = 0.005  # a close disagrees when the sources differ by more than 0.5% of the larger one
+QUOTED_TO_THE_CENT_FROM = 1.0  # a close under a dollar is quoted to four decimals, as markets quote it
+WIDEN_WINDOW_DAYS = 7
+HEAD_ROWS = 3
+COLUMNS = ["date", "open", "high", "low", "close", "adj_close", "volume"]
+SourceChoice = Literal["auto", "yfinance", "massive"]
+
+
+def _to_csv(series: BarSeries) -> str:
+    rows = [",".join(COLUMNS)]
+    for b in series.bars:
+        rows.append(f"{b.date.isoformat()},{b.open},{b.high},{b.low},{b.close},{b.adj_close},{b.volume}")
+    return "\n".join(rows) + "\n"
+
+
+def _fetch_complete(src, symbol: str, expected: list[date], notes: list[str]) -> BarSeries | None:
+    start, end = expected[0], expected[-1]
+    for attempt, s in enumerate((start, start - timedelta(days=WIDEN_WINDOW_DAYS))):
+        series = src.bars(symbol, s, end)
+        wanted = BarSeries(symbol=symbol, source=series.source, bars=[b for b in series.bars if b.date in set(expected)])
+        res = check_completeness(wanted, expected)
+        if res.ok:
+            return wanted
+        notes.append(f"{src.name}: {symbol} missing {', '.join(d.isoformat() for d in res.missing)} (attempt {attempt + 1})")
+    return None
+
+
+def _price_text(price: float) -> str:
+    return f"{price:.2f}" if price >= QUOTED_TO_THE_CENT_FROM else f"{price:.4f}"
+
+
+def _closes_differ(ours: float, theirs: float) -> bool:
+    return abs(ours - theirs) > PRICE_CHECK_TOLERANCE * max(abs(ours), abs(theirs))
+
+
+def _price_check(deps: Deps, primary, symbol: str, expected: list[date], ticker: BarSeries,
+                 notes: list[str]) -> PriceCheck:
+    """Compare the stock's closes with the next history source; the benchmark is not checked. The check never
+    blocks the run: when it cannot be made, the report says so and why. The report shows detail as it is, so it names
+    the sources as the email does ("Massive"); source keeps the internal name."""
+    second = next((s for s in deps.history_sources if s.name != primary.name), None)
+    if second is None:
+        return PriceCheck(status="not_checked", detail="Prices were not cross-checked: no second price source is configured.")
+    sessions = len(expected)
+    second_label, primary_label = source_label(second.name), source_label(primary.name)
+    lacks_sessions = PriceCheck(status="not_checked", source=second.name,
+                                detail=f"Prices were not cross-checked: {second_label} does not have all {sessions} sessions.")
+    try:
+        other = _fetch_complete(second, symbol, expected, notes)
+        if other is None:
+            return lacks_sessions
+        # yfinance's close is split-adjusted and Massive's is raw, so across a split they differ by the split ratio.
+        splits = [a for src in (primary, second) for a in src.corporate_actions(symbol, expected[0], expected[-1])
+                  if a.kind == "split"]
+    except SourceNoData:
+        return lacks_sessions
+    except Exception as e:  # rate limited, down, over quota or broken
+        if not isinstance(e, SourceError):
+            log.warning("price check: %s raised %s", second.name, type(e).__name__)
+        return PriceCheck(status="not_checked", source=second.name,
+                          detail=f"Prices were not cross-checked: {second_label} did not answer ({type(e).__name__}).")
+    if splits:
+        return PriceCheck(status="not_checked", source=second.name,
+                          detail=f"Prices were not cross-checked: a split falls inside the {sessions} sessions, and the "
+                                 "sources adjust for it differently.")
+    theirs = {b.date: b.close for b in other.bars}
+    tolerance = f"{PRICE_CHECK_TOLERANCE:.1%}"
+    disagreements = [(b.date, b.close, theirs[b.date]) for b in ticker.bars if _closes_differ(b.close, theirs[b.date])]
+    if not disagreements:
+        return PriceCheck(status="agree", source=second.name,
+                          detail=f"Closes cross-checked against {second_label}: all {len(ticker.bars)} agree within "
+                                 f"{tolerance}.")
+    listed = "; ".join(f"{day.isoformat()}: {_price_text(ours)} vs {_price_text(other_close)}"
+                       for day, ours, other_close in disagreements)
+    return PriceCheck(status="disagree", source=second.name,
+                      detail=f"Price check: {second_label} disagrees with {primary_label} on {len(disagreements)} of "
+                             f"{len(ticker.bars)} closes by more than {tolerance} ({listed}).")
+
+
+def make_get_price_history(ctx: RunContext, deps: Deps):
+    @tool("get_price_history")
+    def get_price_history(source: SourceChoice = "auto") -> str:
+        """Fetch six completed sessions of daily bars for the chosen gainer and for the benchmark, validate them
+        against the calendar, and write them into the sandbox as ticker.csv, benchmark.csv and meta.json."""
+        blocked = precondition(ctx, "gainer_chosen", "get_price_history", "call find_top_gainer first")
+        if blocked:
+            record_call(ctx, deps, "get_price_history", {"source": source}, blocked)
+            return blocked
+        # Review fix (folded, this round): a finished stage must close. Once history is ready,
+        # re-fetching it could only pair the verified five-day metrics with different bars than
+        # the ones run_python and verify_analysis actually used.
+        if ctx.progress.history_ready:
+            outcome = err("precondition for get_price_history not met: history has already been fetched")
+            record_call(ctx, deps, "get_price_history", {"source": source}, outcome)
+            return outcome
+        session = date.fromisoformat(ctx.session.date)
+        expected = previous_session_dates(session, deps.settings.lookback_sessions + 1)
+        tried = {a.source for a in ctx.history_sources_tried}
+        chain = [s for s in deps.history_sources if s.name not in tried and (source == "auto" or s.name == source)]
+        for src in chain:
+            try:
+                ticker = _fetch_complete(src, ctx.gainer.symbol, expected, ctx.notes)
+                bench = _fetch_complete(src, deps.settings.benchmark_symbol, expected, ctx.notes) if ticker else None
+            except SourceError as e:
+                ctx.history_sources_tried.append(SourceAttempt(source=src.name, ok=False, detail=str(e)[:200]))
+                continue
+            except Exception as e:
+                ctx.history_sources_tried.append(SourceAttempt(source=src.name, ok=False, detail=f"{type(e).__name__}: {e}"[:200]))
+                log.warning("get_price_history: %s raised %s", src.name, type(e).__name__)
+                continue
+            if ticker is None or bench is None:
+                ctx.history_sources_tried.append(SourceAttempt(source=src.name, ok=False, detail="incomplete after widening"))
+                continue
+            meta = {"symbol": ctx.gainer.symbol, "session_date": ctx.session.date, "benchmark": deps.settings.benchmark_symbol,
+                    "required_keys": list(METRIC_NAMES), "definitions": DEFINITIONS_TEXT, "close_column": "adj_close",
+                    "rows": len(ticker.bars)}
+            prepare_sandbox_dir(deps.run_dir.path, _to_csv(ticker), _to_csv(bench), meta)
+            price_check = _price_check(deps, src, ctx.gainer.symbol, expected, ticker, ctx.notes)
+            ctx.history = HistoryInfo(ticker=ticker, benchmark=bench, source=src.name, expected_dates=[d.isoformat() for d in expected],
+                                      price_check=price_check)
+            ctx.history_sources_tried.append(SourceAttempt(source=src.name, ok=True, detail=f"{len(ticker.bars)} bars"))
+            ctx.progress.history_ready = True
+            head = [dict(zip(COLUMNS, [b.date.isoformat(), b.open, b.high, b.low, b.close, b.adj_close, b.volume])) for b in ticker.bars[:HEAD_ROWS]]
+            outcome = ok({"source": src.name, "rows": len(ticker.bars), "columns": COLUMNS, "date_range": [expected[0].isoformat(), expected[-1].isoformat()],
+                          "head": head, "variables_in_sandbox": ["df (ticker bars)", "bench (benchmark bars)", "meta"],
+                          "close_column": "adj_close", "required_result_keys": list(METRIC_NAMES)})
+            record_call(ctx, deps, "get_price_history", {"source": source}, outcome)
+            return outcome
+        remaining = [s.name for s in deps.history_sources if s.name not in {a.source for a in ctx.history_sources_tried}]
+        outcome = err(f"no complete {REQUIRED_CLOSES}-session history; remaining sources: {', '.join(remaining) or 'none'}")
+        record_call(ctx, deps, "get_price_history", {"source": source}, outcome)
+        return outcome
+    return get_price_history

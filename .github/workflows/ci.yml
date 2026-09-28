@@ -1,0 +1,22 @@
+name: ci
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -c constraints.txt -e ".[dev]"
+      - run: pytest tests/unit -q
+      - run: pytest tests/graph -q
+      # Only replay against a recorded cassette when one is checked in; a fresh clone
+      # with no fixtures/cassettes/manifest.json simply skips this tier. --check passes when
+      # the replay ends with the exit code the recording did (a degraded recording is 2 both times).
+      - if: hashFiles('fixtures/cassettes/manifest.json') != ''
+        run: AGENT_EMAIL_TO=ci@example.com nasdaq-agent replay --check
