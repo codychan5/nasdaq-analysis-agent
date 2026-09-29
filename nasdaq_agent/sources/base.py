@@ -11,6 +11,9 @@ class GainerSource(Protocol):
 
 class HistorySource(Protocol):
     name: str
+    # True when close is the price that traded that day; False when the provider restates past closes for later
+    # splits (Yahoo). The price check needs one raw source to say which prices a past session actually traded at.
+    closes_are_raw: bool
     def bars(self, symbol: str, start: date, end: date) -> BarSeries: ...
     def corporate_actions(self, symbol: str, start: date, end: date) -> list[CorporateAction]: ...
 

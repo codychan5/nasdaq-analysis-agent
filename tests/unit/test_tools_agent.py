@@ -799,6 +799,30 @@ def test_an_agreeing_price_check_is_background_in_the_footer(ready, deps):
     text = (deps.run_dir.path / "report.txt").read_text()
     assert f"  {detail}\n" in _footer(text) and detail not in _above_the_metrics(text)
 
+def test_a_restated_price_check_is_background_and_does_not_degrade_the_run(ready, deps):
+    from nasdaq_agent.agent.context import PriceCheck
+    from nasdaq_agent.agent.tools.compose import make_compose_report
+    detail = ("Yahoo Finance's closes are 20 times Massive's on all 6 sessions: a split after these sessions restated "
+              "them, so the day's prices shown are as traded, from Massive.")
+    ready.history.price_check = PriceCheck(status="restated", source="massive", detail=detail)
+    _verified(ready, deps)
+    make_compose_report(ready, deps).invoke(_good_args())
+    text = (deps.run_dir.path / "report.txt").read_text()
+    assert f"  {detail}\n" in _footer(text) and detail not in _above_the_metrics(text)
+    assert not any("price" in note for note in ready.degradations)
+
+def test_declarable_facts_offer_both_price_bases_after_a_restatement(ready, deps):
+    """The model saw the restated closes in the bars and the traded ones in the price-history result, so a narrative
+    may quote either; without a restatement only the headline closes are declarable."""
+    from nasdaq_agent.agent.context import PriceCheck
+    from nasdaq_agent.agent.tools.compose import _declarable_facts
+    ready.gainer.prev_close, ready.gainer.close = 0.535, 0.555  # the traded prices, swapped in by the check
+    facts = _declarable_facts(ready)
+    assert facts == {"session_pct_change": ready.gainer.pct_change, "prev_close": 0.535, "close": 0.555}
+    ready.history.price_check = PriceCheck(status="restated", source="massive", detail="restated")
+    facts = _declarable_facts(ready)
+    assert facts["prev_close_restated"] == 10.70 and facts["close_restated"] == 11.10  # the bars' last two closes
+
 def test_compose_keeps_the_headlines_of_a_news_source_asked_by_name(ctx, deps):
     """get_news for one named source leaves the others untried, so the news step stays open. The report must still use
     that source's headlines, and must not say that every news source failed."""

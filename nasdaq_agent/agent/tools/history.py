@@ -53,6 +53,59 @@ def _closes_differ(ours: float, theirs: float) -> bool:
     return abs(ours - theirs) > PRICE_CHECK_TOLERANCE * max(abs(ours), abs(theirs))
 
 
+# How far each day's factor may sit from the middle one for the six to count as one factor. The restated closes are
+# rounded to the cent, so a factor carries up to half a cent of noise relative to the restated close: 0.5% at a dollar,
+# less above it (AIXI's real factors ran 19.93 to 20.05, a 0.6% spread). 2% leaves room and is still far from anything
+# a one-day data error produces.
+RESTATEMENT_FACTOR_SPREAD = 0.02
+# The smallest factor that reads as a restatement: a 10% stock dividend is the smallest common one. A source that is
+# off by the same 1% every day is not reporting a split.
+MIN_RESTATEMENT_FACTOR = 1.1
+
+
+def _constant_factor(pairs: list[tuple[float, float]]) -> float | None:
+    """The one factor by which every `ours` close exceeds its `theirs` close: the middle factor when every day's
+    factor sits within RESTATEMENT_FACTOR_SPREAD of it and it is at least MIN_RESTATEMENT_FACTOR from 1, either way.
+    None otherwise. A split after the sessions makes a provider restate every earlier close by the split ratio, so
+    the factor is the same on every day; a data error never is."""
+    factors = sorted(ours / theirs for ours, theirs in pairs if theirs > 0)
+    if len(factors) != len(pairs) or not factors:
+        return None
+    middle = factors[len(factors) // 2]
+    if any(abs(f - middle) > RESTATEMENT_FACTOR_SPREAD * middle for f in factors):
+        return None
+    if 1 / MIN_RESTATEMENT_FACTOR < middle < MIN_RESTATEMENT_FACTOR:
+        return None
+    return middle
+
+
+def _factor_text(factor: float) -> str:
+    return f"{factor:.3g} times" if factor >= 1 else f"1/{1 / factor:.3g} of"
+
+
+def _restatement(primary, second, ticker: BarSeries, theirs: dict[date, float],
+                 disagreements: list) -> PriceCheck | None:
+    """When every close disagrees by one factor and one source's closes are the traded prices, the other has restated
+    its history for a later split: report that, with the traded closes for the headline. None otherwise."""
+    if len(disagreements) != len(ticker.bars):
+        return None
+    ours_raw, theirs_raw = getattr(primary, "closes_are_raw", False), getattr(second, "closes_are_raw", False)
+    if ours_raw == theirs_raw:
+        return None
+    factor = _constant_factor([(b.close, theirs[b.date]) for b in ticker.bars])
+    if factor is None:
+        return None
+    raw, restated = (primary, second) if ours_raw else (second, primary)
+    factor = 1 / factor if ours_raw else factor  # the restated source's closes over the raw source's
+    traded = [theirs[b.date] for b in ticker.bars] if theirs_raw else [b.close for b in ticker.bars]
+    return PriceCheck(status="restated", source=second.name,
+                      detail=f"{source_label(restated.name)}'s closes are {_factor_text(factor)} "
+                             f"{source_label(raw.name)}'s on all {len(ticker.bars)} sessions: a split after these "
+                             f"sessions restated them, so the day's prices shown are as traded, from "
+                             f"{source_label(raw.name)}.",
+                      traded_prev_close=traded[-2], traded_close=traded[-1])
+
+
 def _price_check(deps: Deps, primary, symbol: str, expected: list[date], ticker: BarSeries,
                  notes: list[str]) -> PriceCheck:
     """Compare the stock's closes with the next history source; the benchmark is not checked. The check never
@@ -90,6 +143,9 @@ def _price_check(deps: Deps, primary, symbol: str, expected: list[date], ticker:
         return PriceCheck(status="agree", source=second.name,
                           detail=f"Closes cross-checked against {second_label}: all {len(ticker.bars)} agree within "
                                  f"{tolerance}.")
+    restated = _restatement(primary, second, ticker, theirs, disagreements)
+    if restated is not None:
+        return restated
     listed = "; ".join(f"{day.isoformat()}: {_price_text(ours)} vs {_price_text(other_close)}"
                        for day, ours, other_close in disagreements)
     return PriceCheck(status="disagree", source=second.name,
@@ -137,12 +193,22 @@ def make_get_price_history(ctx: RunContext, deps: Deps):
             price_check = _price_check(deps, src, ctx.gainer.symbol, expected, ticker, ctx.notes)
             ctx.history = HistoryInfo(ticker=ticker, benchmark=bench, source=src.name, expected_dates=[d.isoformat() for d in expected],
                                       price_check=price_check)
+            as_traded = None
+            if price_check.status == "restated":
+                # The headline and the cheap-stock warning show the prices that traded, not a later restatement; the
+                # move is the same on either basis, so pct_change stands.
+                ctx.gainer.prev_close, ctx.gainer.close = price_check.traded_prev_close, price_check.traded_close
+                as_traded = {"prev_close": price_check.traded_prev_close, "close": price_check.traded_close}
             ctx.history_sources_tried.append(SourceAttempt(source=src.name, ok=True, detail=f"{len(ticker.bars)} bars"))
             ctx.progress.history_ready = True
             head = [dict(zip(COLUMNS, [b.date.isoformat(), b.open, b.high, b.low, b.close, b.adj_close, b.volume])) for b in ticker.bars[:HEAD_ROWS]]
             outcome = ok({"source": src.name, "rows": len(ticker.bars), "columns": COLUMNS, "date_range": [expected[0].isoformat(), expected[-1].isoformat()],
                           "head": head, "variables_in_sandbox": ["df (ticker bars)", "bench (benchmark bars)", "meta"],
-                          "close_column": "adj_close", "required_result_keys": list(METRIC_NAMES)})
+                          "close_column": "adj_close", "required_result_keys": list(METRIC_NAMES),
+                          **({"prices_as_traded": as_traded,
+                              "note": f"{price_check.detail} Quote these as the session's prices; prev_close and close "
+                                      "now hold them, and the bars' last two closes are declarable as "
+                                      "prev_close_restated and close_restated."} if as_traded else {})})
             record_call(ctx, deps, "get_price_history", {"source": source}, outcome)
             return outcome
         remaining = [s.name for s in deps.history_sources if s.name not in {a.source for a in ctx.history_sources_tried}]

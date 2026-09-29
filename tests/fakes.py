@@ -22,9 +22,10 @@ class FakeGainerSource:
 class FakeHistorySource:
     """error fails every lookup; errors maps a symbol to the exception its lookups raise. A symbol with no data gets
     SourceNoData, as the real adapters answer when they have no bars."""
-    def __init__(self, name="fakehist", data=None, splits=None, error=None, errors=None):
+    def __init__(self, name="fakehist", data=None, splits=None, error=None, errors=None, raw_closes=False):
         self.name, self._data, self._splits, self._error = name, data or {}, splits or [], error
         self._errors = errors or {}
+        self.closes_are_raw = raw_closes  # True for a source whose closes are the traded prices, as Massive's are
     def bars(self, symbol, start, end):
         if self._error: raise SourceError(self._error)
         if symbol in self._errors: raise self._errors[symbol]

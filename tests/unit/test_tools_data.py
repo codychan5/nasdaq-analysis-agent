@@ -195,6 +195,61 @@ def test_a_split_inside_the_sessions_skips_the_check(ctx, deps):
     assert check.detail == ("Prices were not cross-checked: a split falls inside the 6 sessions, and the sources "
                             "adjust for it differently.")
 
+RESTATED_DETAIL = ("Yahoo Finance's closes are 20 times Massive's on all 6 sessions: a split after these sessions "
+                   "restated them, so the day's prices shown are as traded, from Massive.")
+
+def test_a_constant_factor_between_the_sources_is_a_restatement_not_a_disagreement(ctx, deps):
+    """AIXI on 2026-04-07: a 1-for-20 reverse split on 2026-05-11 made Yahoo restate its April closes 20 times higher,
+    while Massive's raw closes are the prices that traded. Every close differs by the same factor, so this is a
+    restatement, not a disagreement: the headline closes become the traded ones and the model is told them."""
+    from nasdaq_agent.agent.tools.session import make_resolve_session
+    from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
+    from nasdaq_agent.agent.tools.history import make_get_price_history
+    restated = {**acme_and_spy_bars(), "ACME": fakes.series("ACME", [c * 20 for c in fakes.CLOSES])}
+    deps.history_sources = [fakes.FakeHistorySource("yfinance", data=restated),
+                            fakes.FakeHistorySource("massive", data=acme_and_spy_bars(), raw_closes=True)]
+    make_resolve_session(ctx, deps).invoke({})
+    make_find_top_gainer(ctx, deps).invoke({"source": "auto"})
+    assert (ctx.gainer.prev_close, ctx.gainer.close) == (214.0, 222.0)  # from the first source, restated
+    out = json.loads(make_get_price_history(ctx, deps).invoke({"source": "auto"}))
+    check = ctx.history.price_check
+    assert (check.status, check.source) == ("restated", "massive")
+    assert check.detail == RESTATED_DETAIL
+    assert (ctx.gainer.prev_close, ctx.gainer.close) == (10.70, 11.10)
+    assert abs(ctx.gainer.pct_change - 3.738) < 0.01  # the move is the same on either basis
+    assert out["prices_as_traded"] == {"prev_close": 10.70, "close": 11.10}
+
+AIXI_YAHOO = [1.98, 2.34, 1.96, 2.62, 16.08, 39.00]      # restated 20 times, then rounded to the cent by Yahoo
+AIXI_MASSIVE = [0.0993, 0.1174, 0.0982, 0.1307, 0.8038, 1.95]  # as traded, quoted to four decimals under a dollar
+
+def test_a_restatement_survives_cent_rounding_of_the_restated_closes(ctx, deps):
+    """AIXI's real closes for 2026-03-30 to 2026-04-07 (run 20260929T151953Z-7d9899): Yahoo's restated closes are
+    rounded to the cent, so the six factors run from 19.93 to 20.05, a 0.6% spread. That is still one factor."""
+    from nasdaq_agent.agent.tools.history import _constant_factor
+    factor = _constant_factor(list(zip(AIXI_YAHOO, AIXI_MASSIVE)))
+    assert factor is not None and abs(factor - 20) < 0.1
+    deps.gainer_sources = [fakes.FakeGainerSource("massive", [fakes.acme_candidate(pct=142.537)])]
+    yahoo = {**acme_and_spy_bars(), "ACME": fakes.series("ACME", AIXI_YAHOO)}
+    massive = {**acme_and_spy_bars(), "ACME": fakes.series("ACME", AIXI_MASSIVE)}
+    deps.history_sources = [fakes.FakeHistorySource("yfinance", data=yahoo),
+                            fakes.FakeHistorySource("massive", data=massive, raw_closes=True)]
+    check = price_check_after_history(ctx, deps)
+    assert check.status == "restated" and check.detail.startswith("Yahoo Finance's closes are 20 times Massive's")
+    assert (ctx.gainer.prev_close, ctx.gainer.close) == (0.8038, 1.95)
+
+def test_a_factor_too_close_to_one_is_not_a_restatement(ctx, deps):
+    """A source that is off by the same 1% every day is not reporting a split; that stays a disagreement."""
+    from nasdaq_agent.agent.tools.history import _constant_factor
+    assert _constant_factor([(c * 1.01, c) for c in fakes.CLOSES]) is None
+
+def test_a_constant_factor_without_a_raw_source_is_still_a_disagreement(ctx, deps):
+    """When neither source says its closes are the traded prices, nothing can be swapped in, so the sources simply
+    disagree, as before."""
+    restated = {**acme_and_spy_bars(), "ACME": fakes.series("ACME", [c * 20 for c in fakes.CLOSES])}
+    deps.history_sources = [fakes.FakeHistorySource("yfinance", data=restated),
+                            fakes.FakeHistorySource("massive", data=acme_and_spy_bars())]
+    assert price_check_after_history(ctx, deps).status == "disagree"
+
 def test_find_top_gainer_error_names_remaining_sources_and_each_source_once(ctx, deps):
     from nasdaq_agent.agent.tools.session import make_resolve_session
     from nasdaq_agent.agent.tools.gainer import make_find_top_gainer

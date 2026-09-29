@@ -62,6 +62,7 @@ def _default_ticker(symbol: str):
 
 class YfinanceHistorySource:
     name = "yfinance"
+    closes_are_raw = False  # Yahoo restates past closes for splits that come later, so close is split-adjusted
 
     def __init__(self, universe: Universe, ticker_factory: Callable = _default_ticker):
         self._universe, self._ticker = universe, ticker_factory

@@ -79,10 +79,12 @@ Then run:
 ```bash
 nasdaq-agent run                                        # or: make run
 nasdaq-agent run --now 2026-09-24T22:00:00+00:00        # pin the clock; the offset is required
-AGENT_SESSION_DATE=2026-07-08 nasdaq-agent run          # report on a past trading day
+AGENT_SESSION_DATE=2026-04-07 nasdaq-agent run          # report on a past trading day
 nasdaq-agent run --env-file other.env                   # use another settings file
 nasdaq-agent resume --run-id 20260924T220000Z-abc123    # continue an interrupted live run
 ```
+
+2026-04-07 is a good first past day to try: it needs `MASSIVE_API_KEY` and takes about three and a half minutes. On 2026-09-29 it named AIXI (+142.54%), cited a Benzinga story published before the open, warned that the prior close was under $5, and explained in the footer that Yahoo's closes are 20 times Massive's because of a reverse split the following month, with the traded prices in the headline and exit 0. Live sources change, so a later run may differ in the news.
 
 A pinned run sees only the news published by the pinned moment. Massive and SEC EDGAR are asked for exactly that window. Yahoo cannot filter by date: it returns its latest ten items, and those after the pinned moment are dropped, so for a date long past Yahoo may have nothing left.
 
@@ -327,7 +329,7 @@ Every cause of exit 2, with its note:
 | `news unavailable from every source` | News sources were tried and none succeeded. |
 | `news was not fetched` | News was never requested. |
 | `sentiment unavailable` | Headlines arrived, but no sentiment was recorded. |
-| `closes disagree with a second price source` | At least one of the stock's six closes differs from a second price source by more than 0.5% of the larger close. A check that cannot be made, such as across a split, is explained in the footer and does not change the exit code. |
+| `closes disagree with a second price source` | At least one of the stock's six closes differs from a second price source by more than 0.5% of the larger close. A check that cannot be made, such as across a split, is explained in the footer and does not change the exit code. Nor does a restatement: when all six closes differ by one factor, a split after those sessions made Yahoo restate them, so the footer names the factor and the headline shows the prices as traded, from Massive. |
 | `chart unavailable` | The chart failed to render, so the email goes out without it. |
 | `judge unavailable: prose checked by the deterministic layer only` | The judge call failed in a live run. In replay a missing judge response fails the run, and in record mode a judge failure stops the seal. |
 | `narrative is template-generated after grounding failures` | The written summary still failed the fact check after two rewrites. |
@@ -386,3 +388,4 @@ make record               # AGENT_MODE=record nasdaq-agent record
 | A run pauses for up to a minute and a half on one data request | Either the run has used Massive's allowance of 5 calls a minute, which every Massive request shares, and the next call waits for the window; or a provider answered HTTP 429 and the client is waiting out its rate limit. The log names the host and each 429 wait. If the source is still busy after 90 seconds of waiting, the tool tries the next one. |
 | The report says the closes disagree with a second price source, and the run exits 2 | Yahoo and Massive differ by more than 0.5% on at least one of the stock's six closes; the note under the status line names each date and both closes. Check the figures against another quote before relying on them. The two sources adjust for splits differently, so across a split the check is skipped instead. |
 | The report says the prices were not cross-checked | No second price source is configured (set `MASSIVE_API_KEY`), or it could not answer this run; the footer gives the reason. The run is not degraded. |
+| The footer says one source's closes are some number of times the other's, and the headline prices are not the ones Yahoo shows | The stock split, or reverse split, after the session, and Yahoo restates its earlier closes for that; Massive's closes are the prices that traded, and the headline, the cheap-stock warning and the model's prices use them. The five-day figures use the adjusted series, so every percentage is the same on either basis. The run is not degraded. Seen with past sessions (`AGENT_SESSION_DATE`), since a live run cannot be followed by a split. |

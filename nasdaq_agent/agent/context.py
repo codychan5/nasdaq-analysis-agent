@@ -76,10 +76,14 @@ class GainerInfo(Strict):
 
 
 class PriceCheck(Strict):
-    """The stock's closes compared with a second history source. detail is the sentence the report shows."""
-    status: Literal["agree", "disagree", "not_checked"]
+    """The stock's closes compared with a second history source. detail is the sentence the report shows. restated:
+    every close differs by one factor, the mark of a split after the sessions that one source restated its history
+    for; traded_prev_close and traded_close are then the raw source's closes for the session and the one before."""
+    status: Literal["agree", "disagree", "not_checked", "restated"]
     source: str | None = None
     detail: str
+    traded_prev_close: float | None = None
+    traded_close: float | None = None
 
 
 class HistoryInfo(Strict):

@@ -120,6 +120,7 @@ MS_PER_SECOND = 1000
 
 class MassiveHistorySource:
     name = "massive"
+    closes_are_raw = True  # adjusted=false: the closes are the prices that traded
 
     def __init__(self, client: HttpClient, api_key: str, universe: Universe):
         self._client, self._api_key, self._universe = client, api_key, universe

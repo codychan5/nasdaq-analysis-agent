@@ -155,6 +155,18 @@ def _derive_news_and_sentiment_degradations(ctx: RunContext) -> None:
         ctx.degradations.append(SENTIMENT_UNAVAILABLE_NOTE)
 
 
+def _declarable_facts(ctx: RunContext) -> dict[str, float]:
+    """The session's own figures the narrative may quote besides the verified metrics: the move and the headline
+    closes. After a restatement the headline closes are the traded prices while the bars the model analysed hold the
+    restated ones, so those last two closes are declarable too, under their own names."""
+    facts = {"session_pct_change": ctx.gainer.pct_change, "prev_close": ctx.gainer.prev_close, "close": ctx.gainer.close}
+    check = ctx.history.price_check if ctx.history else None
+    if check is not None and check.status == "restated" and len(ctx.history.ticker.bars) >= 2:
+        facts["prev_close_restated"] = ctx.history.ticker.bars[-2].close
+        facts["close_restated"] = ctx.history.ticker.bars[-1].close
+    return facts
+
+
 def _derive_price_check_degradation(ctx: RunContext) -> None:
     """A disagreement between the price sources degrades the run to exit 2. A check that could not be made does not:
     the run is as good as one without the check, and the footer says why."""
@@ -272,7 +284,7 @@ def make_compose_report(ctx: RunContext, deps: Deps):
         # These three names -- not produced by verify_analysis, since
         # they come from find_top_gainer -- become declarable alongside the metric names, so
         # the narrative may quote the session's own close-to-close move and prices.
-        extra_facts = {"session_pct_change": ctx.gainer.pct_change, "prev_close": ctx.gainer.prev_close, "close": ctx.gainer.close}
+        extra_facts = _declarable_facts(ctx)
         # A year-shaped number is exempt from the grounding check only
         # for years the model could legitimately be writing about -- the session's own year and
         # the one before it (e.g. "since 2025"). Any other 19xx/20xx-shaped number must match a
