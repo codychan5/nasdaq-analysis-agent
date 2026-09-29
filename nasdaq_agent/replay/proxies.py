@@ -12,8 +12,8 @@ from .failures import failure_entry, is_failure_entry, raise_recorded_failure
 from .files import REPLAY, read_json_entry, require_cassette_mode, write_json_atomic
 
 SOURCES_DIR = "sources"
-# Each method's result model, and whether it returns one object or a list of them (fix round 1, minor 3: a stored
-# entry of the other shape is refused).
+# Each method's result model, and whether it returns one object or a list of them. A stored entry of the other shape
+# is refused.
 RECORDED_METHODS: dict[str, tuple[type[BaseModel], type]] = {
     "top_candidates": (Candidate, list), "bars": (BarSeries, dict),
     "corporate_actions": (CorporateAction, list), "headlines": (Headline, list)}
@@ -47,7 +47,7 @@ class RecordedSource:
         try:
             result = getattr(self._inner, method)(*args)
         except Exception as e:
-            # K2: the failure is recorded too, so replay shows the model the same failure. yfinance adapters hold no
+            # The failure is recorded too, so replay shows the model the same failure. yfinance adapters hold no
             # credentials, and the seal's secret scan would refuse the recording if a message carried one.
             write_json_atomic(path, failure_entry(e))
             raise

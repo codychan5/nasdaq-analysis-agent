@@ -1,6 +1,6 @@
-"""The recording environment (Tasks 22+23 fix round 1, Important 2). Cache keys contain provider kwargs and tool JSON
-schemas as the installed langchain-core and pydantic generate them, and sandbox results depend on numpy and pandas, so
-the manifest records these versions and the sandbox backend, and replay names every difference it finds."""
+"""The recording environment. Cache keys contain provider kwargs and tool JSON schemas as the installed langchain-core
+and pydantic generate them, and sandbox results depend on numpy and pandas, so the manifest records these versions and
+the sandbox backend, and replay names every difference it finds."""
 import platform
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any

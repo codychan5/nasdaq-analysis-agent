@@ -239,6 +239,19 @@ def test_get_price_history_fails_over_when_incomplete(ctx, deps):
     out = json.loads(make_get_price_history(ctx, deps).invoke({"source": "auto"}))
     assert out["source"] == "fakehist" and any("missing" in n for n in ctx.notes)
 
+def test_get_price_history_fails_over_when_a_source_repeats_a_session(ctx, deps):
+    """A repeated day would give the analysis seven bars, which the verifier rejects on every attempt."""
+    from nasdaq_agent.agent.tools.session import make_resolve_session
+    from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
+    from nasdaq_agent.agent.tools.history import make_get_price_history
+    repeated = fakes.series("ACME", fakes.CLOSES + fakes.CLOSES[-1:], fakes.SESSIONS + fakes.SESSIONS[-1:])
+    doubled = fakes.FakeHistorySource("yfinance", data={"ACME": repeated, "SPY": fakes.series("SPY", fakes.BENCH)})
+    deps.history_sources = [doubled, deps.history_sources[0]]
+    make_resolve_session(ctx, deps).invoke({}); make_find_top_gainer(ctx, deps).invoke({"source": "auto"})
+    out = json.loads(make_get_price_history(ctx, deps).invoke({"source": "auto"}))
+    assert (out["source"], out["rows"]) == ("fakehist", 6)
+    assert any("yfinance: ACME repeats 2026-09-24" in n for n in ctx.notes)
+
 def test_get_news_wraps_headlines_as_untrusted(ctx, deps):
     from nasdaq_agent.agent.tools.session import make_resolve_session
     from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
@@ -281,8 +294,7 @@ def test_find_top_gainer_skips_candidate_on_split(ctx, deps):
     assert ctx.skipped_candidates and ctx.skipped_candidates[0].reason == "split effective in session"
 
 def test_find_top_gainer_refuses_once_already_chosen(ctx, deps):
-    # Review fix (folded, this round): a finished stage must close, matching run_python
-    # (once verified) and compose_report (once sent).
+    # A finished stage must close, matching run_python (once verified) and compose_report (once sent).
     from nasdaq_agent.agent.tools.session import make_resolve_session
     from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
     make_resolve_session(ctx, deps).invoke({})
@@ -522,3 +534,87 @@ def test_get_news_can_ask_the_sec_source_by_name(ctx, deps):
     _news_ready(ctx, deps)
     out = json.loads(make_get_news(ctx, deps).invoke({"source": "sec"}))
     assert out["headlines"][0]["title"] == filing.title and out["headlines"][0]["source"] == "sec"
+
+def test_get_price_history_reports_when_every_source_fails(ctx, deps):
+    from nasdaq_agent.agent.tools.session import make_resolve_session
+    from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
+    from nasdaq_agent.agent.tools.history import make_get_price_history
+    make_resolve_session(ctx, deps).invoke({}); make_find_top_gainer(ctx, deps).invoke({"source": "auto"})
+    deps.history_sources = [fakes.FakeHistorySource("yfinance", error="down"), fakes.FakeHistorySource("massive", error="down")]
+    out = make_get_price_history(ctx, deps).invoke({"source": "auto"})
+    assert out == "ERROR: no complete 6-session history; remaining sources: none"
+    assert not ctx.progress.history_ready
+    assert [(a.source, a.ok) for a in ctx.history_sources_tried] == [("yfinance", False), ("massive", False)]
+
+def test_resolve_session_reports_a_calendar_failure(ctx, deps, monkeypatch):
+    from nasdaq_agent.agent.tools import session as session_tool
+    from nasdaq_agent.calendar import CalendarError
+
+    def unresolvable(now):
+        raise CalendarError("no completed session in range")
+
+    monkeypatch.setattr(session_tool, "resolve_last_completed_session", unresolvable)
+    out = session_tool.make_resolve_session(ctx, deps).invoke({})
+    assert out == "ERROR: calendar could not resolve a session: no completed session in range"
+    assert ctx.errors == ["calendar: no completed session in range"] and not ctx.progress.session_resolved
+
+
+class AskedFor(fakes.FakeHistorySource):
+    """Records every symbol the gainer tool asks bars for."""
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.symbols = []
+    def bars(self, symbol, start, end):
+        self.symbols.append(symbol)
+        return super().bars(symbol, start, end)
+
+def test_find_top_gainer_records_the_stocks_the_filter_removed_and_never_checks_them(ctx, deps):
+    from nasdaq_agent.agent.tools.session import make_resolve_session
+    from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
+    from nasdaq_agent.sources.models import Candidate
+    warrant = Candidate(symbol="NXGLW", prev_close=0.14, close=0.3006, pct_change=114.714, source="massive",
+                        excluded="excluded as warrant")
+    deps.gainer_sources = [fakes.FakeGainerSource("massive", [warrant, fakes.acme_candidate()])]
+    hist = AskedFor(data={"ACME": fakes.series("ACME", fakes.CLOSES), "SPY": fakes.series("SPY", fakes.BENCH)})
+    deps.history_sources = [hist]
+    make_resolve_session(ctx, deps).invoke({})
+    out = make_find_top_gainer(ctx, deps).invoke({"source": "auto"})
+    assert json.loads(out)["symbol"] == "ACME" and "NXGLW" not in hist.symbols and ctx.skipped_candidates == []
+    assert [(e.symbol, e.source, e.pct_change, e.reason) for e in ctx.excluded_candidates] == [
+        ("NXGLW", "massive", 114.714, "excluded as warrant")]
+    # The model is shown what it was shown before: the pick and the checks it failed, not what the filter removed.
+    assert "NXGLW" not in out
+
+def test_find_top_gainer_records_which_list_decided_what_counts(ctx, deps):
+    from nasdaq_agent.agent.tools.session import make_resolve_session
+    from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
+    from nasdaq_agent.universe import Universe
+    deps.universe = Universe.from_text(
+        "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\n"
+        "ACME|Acme Corp - Common Stock|Q|N|N|100|N|N\nSPY|SPDR S&P 500|G|N|N|100|Y|N\n"
+        "File Creation Time: 0924202608:05|||||||\n")
+    make_resolve_session(ctx, deps).invoke({})
+    make_find_top_gainer(ctx, deps).invoke({"source": "auto"})
+    assert (ctx.listing.source, ctx.listing.listed_on, ctx.listing.common_stocks) == ("nasdaqtrader", "2026-09-24", 1)
+
+class NoDayList:
+    def __init__(self):
+        self.days = []
+    def for_session(self, session_date):
+        from nasdaq_agent.universe import UniverseError
+        self.days.append(session_date)
+        raise UniverseError(f"a run for {session_date} needs MASSIVE_API_KEY")
+
+def test_find_top_gainer_stops_when_the_days_list_cannot_be_had(ctx, deps):
+    from nasdaq_agent.agent.tools.session import make_resolve_session
+    from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
+    deps.universe = NoDayList()
+    source = fakes.FakeGainerSource("massive", [fakes.acme_candidate()])
+    deps.gainer_sources = [source]
+    make_resolve_session(ctx, deps).invoke({})
+    tool = make_find_top_gainer(ctx, deps)
+    msg = tool.invoke({"source": "auto"})
+    assert msg.startswith("ERROR") and "2026-09-24" in msg and "MASSIVE_API_KEY" in msg
+    assert source.calls == 0 and not ctx.progress.gainer_chosen and ctx.gainer_sources_tried == []
+    tool.invoke({"source": "auto"})
+    assert len([e for e in ctx.errors if "MASSIVE_API_KEY" in e]) == 1

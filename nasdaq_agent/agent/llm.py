@@ -13,7 +13,7 @@ Purpose = Literal["orchestrator", "judge"]
 ANTHROPIC_PREFIX = "anthropic:"
 # Provider prefix -> the Settings field holding its key. The key is handed to the model explicitly rather than left
 # for the provider class to find in os.environ: pydantic-settings does not export .env values to the environment, so
-# a key set only in .env would never reach the model; replay also sends its placeholder key this way (Task 22).
+# a key set only in .env would never reach the model; replay also sends its placeholder key this way.
 PROVIDER_KEY_FIELDS = {"google_genai": "google_api_key", "anthropic": "anthropic_api_key",
                        "openrouter": "openrouter_api_key"}
 # OpenRouter speaks the OpenAI API, so "openrouter:<id>" goes through LangChain's OpenAI client at this endpoint. The
@@ -46,7 +46,7 @@ def _require_prefix(model_string: str) -> str:
 
 
 def _init_kwargs(model_string: str) -> dict:
-    """Controller correction 4: only send temperature=0 to providers that accept it."""
+    """Only send temperature=0 to providers that accept it."""
     return {} if model_string.startswith(ANTHROPIC_PREFIX) else {"temperature": 0}
 
 

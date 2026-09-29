@@ -40,6 +40,32 @@ class Candidate(BaseModel):
     volume: float | None = None
     market_cap: float | None = None
     source: str
+    # Why this stock does not count for the session (not NASDAQ common stock or an ADR that day), in plain words; None
+    # when it counts. Sources return such stocks too when they rank above the last one that counts, so a run records
+    # what the filter removed.
+    excluded: str | None = None
+
+
+# The most excluded stocks one source reports above its last counted stock: enough to show what outranked the pick,
+# bounded because the whole market's warrants and ETFs can rank there.
+MAX_EXCLUDED_CANDIDATES = 25
+
+
+def rank_candidates(candidates: list["Candidate"], limit: int, max_excluded: int = MAX_EXCLUDED_CANDIDATES) -> list["Candidate"]:
+    """Highest gain first, down to the `limit`-th stock that counts, keeping at most `max_excluded` of the stocks that
+    do not count ranked above that point."""
+    ranked: list[Candidate] = []
+    counted = excluded = 0
+    for candidate in sorted(candidates, key=lambda c: c.pct_change, reverse=True):
+        if counted == limit:
+            break
+        if candidate.excluded is None:
+            counted += 1
+            ranked.append(candidate)
+        elif excluded < max_excluded:
+            excluded += 1
+            ranked.append(candidate)
+    return ranked
 
 
 # The longest article summary kept from a news provider: enough for the key facts of a story, bounded so twenty

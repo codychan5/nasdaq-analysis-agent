@@ -8,10 +8,10 @@ from .schemas import JudgeVerdict, Narrative
 
 
 class JudgeFn(Protocol):
-    """Review fix (Important): extra_facts defaults to None so every existing caller and fake keeps working, but
-    compose_report always passes it by keyword, so the judge sees the same session move / closing prices that grounding
-    already allows the narrative to declare. session_facts, passed the same way, names the stock, the session and its
-    standing as the session's top gainer; without them the judge flagged sentences that mention those as unsupported."""
+    """extra_facts defaults to None so every existing caller and fake keeps working, but compose_report always passes
+    it by keyword, so the judge sees the same session move and closing prices that grounding already allows the
+    narrative to declare. session_facts, passed the same way, names the stock, the session and its standing as the
+    session's top gainer; without them the judge flagged sentences that mention those as unsupported."""
     def __call__(self, verified: AnalysisResult, headlines: list[Headline], narrative: Narrative,
                  extra_facts: dict[str, float] | None = None,
                  session_facts: dict[str, str | None] | None = None) -> JudgeVerdict: ...

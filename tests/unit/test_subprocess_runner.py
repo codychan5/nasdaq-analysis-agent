@@ -80,7 +80,7 @@ def test_setup_failure_returns_runresult(sandbox_dir, monkeypatch):
 
 
 def test_bootstrap_blocks_reading_outside_sandbox_at_runtime(sandbox_dir, tmp_path):
-    # B6: even code that slips past the static gate cannot read a file outside the sandbox. Run the
+    # Even code that slips past the static gate cannot read a file outside the sandbox. Run the
     # bootstrap directly (as the socket test does) to bypass the gate and prove the runtime open() guard.
     import subprocess, sys
     from nasdaq_agent.sandbox.bootstrap import write_sandbox_files
@@ -95,7 +95,7 @@ def test_bootstrap_blocks_reading_outside_sandbox_at_runtime(sandbox_dir, tmp_pa
     assert "PermissionError" in proc.stderr
 
 def test_bootstrap_blocks_writing_files_at_runtime(sandbox_dir):
-    # B6: every write mode is refused, even for a path inside the sandbox directory.
+    # The runtime open() guard refuses every write mode, even for a path inside the sandbox directory.
     import subprocess, sys
     from nasdaq_agent.sandbox.bootstrap import write_sandbox_files
     target = sandbox_dir / "should_not_appear.txt"
@@ -107,7 +107,7 @@ def test_bootstrap_blocks_writing_files_at_runtime(sandbox_dir):
     assert "writing files is disabled" in proc.stderr
 
 def test_gate_bypass_write_is_stopped_at_runtime(sandbox_dir, tmp_path):
-    # B6 end to end through the runner: apply('to_csv', ...) is a string-dispatch the static gate does
+    # End to end through the runner: apply('to_csv', ...) is a string-dispatch the static gate does
     # not catch, but the runtime open() guard refuses the write, so no file is created outside the sandbox.
     from nasdaq_agent.sandbox.runner import SubprocessRunner
     from nasdaq_agent.sandbox.gate import check_code
@@ -118,7 +118,7 @@ def test_gate_bypass_write_is_stopped_at_runtime(sandbox_dir, tmp_path):
     assert r.exit_code != 0 and not outside.exists()  # ...the runtime guard stops the write
 
 def test_bootstrap_rebinds_numpy_datasource_opener(sandbox_dir, tmp_path):
-    # Final residual 1b: numpy's DataSource captured the built-in open at import (before the bootstrap
+    # numpy's DataSource captured the built-in open at import (before the bootstrap
     # wrapped it). The bootstrap rebinds its default opener to the guard. Run the bootstrap directly (gate
     # bypassed) and drive the rebound opener for both a read outside the sandbox and a write -- both fail closed.
     import subprocess, sys
@@ -144,7 +144,7 @@ def test_bootstrap_rebinds_numpy_datasource_opener(sandbox_dir, tmp_path):
     assert victim.read_text() == "original"  # the write never happened
 
 def test_relative_sandbox_dir_is_resolved_by_the_runner(sandbox_dir, monkeypatch):
-    """Tasks 22+23 fix round 1, K9: the child runs inside the sandbox directory, so the runner resolves it itself (as
+    """The child runs inside the sandbox directory, so the runner resolves it itself (as
     DockerRunner does) -- a relative path to the bootstrap would otherwise be resolved against the sandbox again."""
     from pathlib import Path
     from nasdaq_agent.sandbox.runner import SubprocessRunner

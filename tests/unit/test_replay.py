@@ -1,7 +1,8 @@
 # tests/unit/test_replay.py
-"""Task 22: record and replay. The first four tests are the task plan's, verbatim. The rest cover the controller's
-corrections (a, b, c, e, f, j, k) and what the spec's "replay runs the bundled cassette with no keys" needs. All
-offline: no keys, no network."""
+"""Record and replay: the cassette stores and their manifest, what the model sees (no run-specific values, error text
+in the Docker layout, rounded floats), the symbol file coming through the cassette, replay never sending real mail,
+recorded failures replaying as they happened, and a recording that never moves or deletes anything that is not a
+cassette -- including that replay runs the bundled cassette with no keys. All offline: no keys, no network."""
 import json
 import re
 import sys
@@ -24,8 +25,8 @@ CREDENTIAL_VARIABLES = ("MASSIVE_API_KEY", "ALPHAVANTAGE_API_KEY", "GOOGLE_API_K
 
 @pytest.fixture(autouse=True)
 def _clean_environment(monkeypatch):
-    """Fix round 1, minor 2: a developer's exported keys or AGENT_* settings must not change what these tests see
-    (a MASSIVE_API_KEY would add Massive to every source chain). Tests set what they need themselves."""
+    """A developer's exported keys or AGENT_* settings must not change what these tests see (a MASSIVE_API_KEY
+    would add Massive to every source chain). Tests set what they need themselves."""
     import os
     for name in [*CREDENTIAL_VARIABLES, *(n for n in os.environ if n.startswith("AGENT_"))]:
         monkeypatch.delenv(name, raising=False)
@@ -108,7 +109,7 @@ def test_cassette_stores_reject_an_unknown_mode(tmp_path):
 
 
 def test_llm_cache_stores_plain_message_data(tmp_path):
-    """Correction a: messages_to_dict for the message plus the generation's text and generation_info -- plain JSON,
+    """An entry holds messages_to_dict for the message plus the generation's text and generation_info -- plain JSON,
     no langchain serialization envelope."""
     from langchain_core.messages import AIMessage
     from langchain_core.outputs import ChatGeneration
@@ -123,8 +124,8 @@ def test_llm_cache_stores_plain_message_data(tmp_path):
 
 
 def test_llm_cache_never_deserializes_a_langchain_envelope(tmp_path, monkeypatch):
-    """Correction a: cassettes are committed files, so generic deserialization of them is the serialization-injection
-    class behind CVE-2025-68664. A serialized-object envelope, or a non-AI message, is refused as malformed."""
+    """Cassettes are committed files, so generic deserialization of them is the serialization-injection class behind
+    CVE-2025-68664. A serialized-object envelope, or a non-AI message, is refused as malformed."""
     import langchain_core.load as lc_load
     from langchain_core.messages import AIMessage
     from langchain_core.outputs import ChatGeneration
@@ -145,7 +146,7 @@ def test_llm_cache_never_deserializes_a_langchain_envelope(tmp_path, monkeypatch
 
 
 def test_stale_manifest_error_names_the_cassette(tmp_path, monkeypatch):
-    """Spec section 12: replay fails loudly with the cassette name when a prompt template has changed."""
+    """Replay fails loudly with the cassette name when a prompt template has changed."""
     from nasdaq_agent.replay import llm_cache as lc
     from nasdaq_agent.sources.errors import CassetteMiss
     with pytest.raises(CassetteMiss, match="record"):
@@ -180,7 +181,7 @@ def test_wrap_sources_wraps_only_the_yfinance_backed_adapters(tmp_path):
     assert wrapped[1].name == "yahoo" and wrapped[1].requires_market_closed is True
 
 
-# --- Correction b: model-visible tool results carry no run-specific values ------------------------
+# --- Model-visible tool results carry no run-specific values --------------------------------------
 
 def test_send_email_results_carry_no_run_specific_values(ready, deps):
     from nasdaq_agent.agent.tools.compose import make_compose_report
@@ -227,7 +228,7 @@ def test_run_python_results_omit_the_sandbox_backend(ready, deps):
     assert [a.backend for a in ready.analysis.attempts] == ["fake", "fake"]  # kept in attempts for the report's footer
 
 
-# --- Correction f: error tails show the Docker layout, never the host's ---------------------------
+# --- Error tails show the Docker layout, never the host's -----------------------------------------
 
 def test_run_python_error_text_uses_the_docker_layout(ready, deps):
     from nasdaq_agent.agent.tools.code import make_run_python
@@ -273,7 +274,7 @@ def test_run_python_works_with_a_relative_artifacts_directory(ctx, deps, tmp_pat
     assert out["exit_code"] == 0 and out["result"]["trend"] == "uptrend"
 
 
-# --- Correction k: the symbol file comes through the cassette in record and replay -----------------
+# --- The symbol file comes through the cassette in record and replay -------------------------------
 
 def _replay_settings_for(tmp_path, **update):
     from nasdaq_agent.config import Mode, Settings
@@ -299,13 +300,15 @@ def test_build_deps_in_replay_loads_the_universe_from_the_cassette_without_netwo
 
     monkeypatch.setattr(httpx.Client, "send", no_network)
     monkeypatch.setattr(sandbox_runner, "docker_available", lambda: False)
+    monkeypatch.setenv("AGENT_SANDBOX_BACKEND", "subprocess")  # without Docker, the fallback runs only by choice
     settings = _replay_settings_for(tmp_path)
     HttpCassette(settings.cassette_dir, "record").store(request_key("GET", SYMBOL_FILE_URL, None), 200, SAMPLE)
     settings.artifacts_dir.mkdir()  # empty: no local universe cache on a clean machine
     run_dir = RunDir(tmp_path / "runs", "run-k")
     built = graph.build_deps(settings, RunContext.new("run-k", "h", str(run_dir.path)), run_dir,
                              clock=lambda: datetime(2026, 9, 24, 22, 0, tzinfo=timezone.utc), judge=lambda *a, **k: None)
-    assert built.universe.is_common_stock("AAPL") and built.universe.record("TSLA") is not None
+    # The symbol file is the chooser's official list; a session before its day would use Massive's list instead.
+    assert built.universe.official.is_common_stock("AAPL") and built.universe.official.record("TSLA") is not None
     assert list(settings.artifacts_dir.iterdir()) == []  # and it writes no local cache either
     assert [s.name for s in built.gainer_sources] == ["yahoo", "nasdaqcom"]
     assert isinstance(built.gainer_sources[0], RecordedSource) and isinstance(built.history_sources[0], RecordedSource)
@@ -322,6 +325,7 @@ def test_replay_ignores_a_fresh_local_universe_cache(tmp_path, monkeypatch):
     from nasdaq_agent.universe import SYMBOL_FILE_URL
     from tests.unit.test_universe import SAMPLE
     monkeypatch.setattr(sandbox_runner, "docker_available", lambda: False)
+    monkeypatch.setenv("AGENT_SANDBOX_BACKEND", "subprocess")  # without Docker, the fallback runs only by choice
     settings = _replay_settings_for(tmp_path)
     HttpCassette(settings.cassette_dir, "record").store(request_key("GET", SYMBOL_FILE_URL, None), 200, SAMPLE)
     settings.artifacts_dir.mkdir()
@@ -329,10 +333,10 @@ def test_replay_ignores_a_fresh_local_universe_cache(tmp_path, monkeypatch):
     run_dir = RunDir(tmp_path / "runs", "run-k2")
     built = graph.build_deps(settings, RunContext.new("run-k2", "h", str(run_dir.path)), run_dir,
                              clock=lambda: datetime(2026, 9, 24, 22, 0, tzinfo=timezone.utc), judge=lambda *a, **k: None)
-    assert built.universe.record("TSLA") is not None and built.universe.record("ZZZZ") is None
+    assert built.universe.official.record("TSLA") is not None and built.universe.official.record("ZZZZ") is None
 
 
-# --- Correction j: replay never sends real mail ----------------------------------------------------
+# --- Replay never sends real mail ------------------------------------------------------------------
 
 def test_replay_always_uses_the_file_outbox_whatever_smtp_settings_hold(tmp_path, monkeypatch):
     for name, value in {"AGENT_EMAIL_TO": "r@example.com", "AGENT_SMTP_HOST": "smtp.example.com",
@@ -349,7 +353,7 @@ def test_replay_always_uses_the_file_outbox_whatever_smtp_settings_hold(tmp_path
     assert graph._transport_for_mode(record, run_dir.outbox_dir).name == "smtp"  # record is a live run
 
 
-# --- Zero keys (spec: "replay runs the bundled cassette with no keys") -----------------------------
+# --- Zero keys: replay runs the bundled cassette with no keys --------------------------------------
 
 def test_replay_builds_the_default_model_with_no_key_and_the_recorded_llm_string(tmp_path, monkeypatch):
     """The provider class is still needed in replay -- bind_tools, with_structured_output and the cache key all come
@@ -365,7 +369,7 @@ def test_replay_builds_the_default_model_with_no_key_and_the_recorded_llm_string
     recorded_with = replay.model_copy(update={"google_api_key": SecretStr("a-real-key-at-record-time")})
     assert build_chat_model(replay, "orchestrator")._get_llm_string() == \
         build_chat_model(recorded_with, "orchestrator")._get_llm_string()
-    assert replay.llm_call_delay_seconds == 0  # correction c
+    assert replay.llm_call_delay_seconds == 0  # replay never sleeps between model calls
 
 
 def test_build_chat_model_passes_the_provider_key_from_settings(monkeypatch):
@@ -445,7 +449,7 @@ def test_request_hash_ignores_credential_parameters():
     assert request_key("GET", url, {"adjusted": "false"}) != request_key("GET", url, {"adjusted": "true"})
 
 
-# --- Correction e: cassette hygiene ------------------------------------------------------------------
+# --- Cassette hygiene --------------------------------------------------------------------------------
 
 def _previous_cassette(root: Path) -> dict[str, str]:
     """A small valid-looking cassette at root, returned as {relative path: content} for later comparison."""
@@ -461,7 +465,7 @@ def _tree(root: Path) -> dict[str, str]:
 
 
 def test_start_recording_stages_next_to_the_cassette_and_leaves_it_untouched(tmp_path):
-    """K7: a recording goes into a fresh staging directory beside the cassette; the cassette itself is not touched."""
+    """A recording goes into a fresh staging directory beside the cassette; the cassette itself is not touched."""
     from nasdaq_agent.replay.recording import start_recording
     final = tmp_path / "cassette"
     before = _previous_cassette(final)
@@ -471,7 +475,7 @@ def test_start_recording_stages_next_to_the_cassette_and_leaves_it_untouched(tmp
 
 
 def test_recording_guard_refuses_a_directory_that_is_not_a_cassette(tmp_path):
-    """K7 guard: nothing outside a cassette directory may ever be moved or deleted."""
+    """The recording guard: nothing outside a cassette directory may ever be moved or deleted."""
     from nasdaq_agent.replay.recording import CassetteDirectoryRefused, start_recording
     run_id = "20260924T220000Z-abc123"
     unrelated = tmp_path / "project"
@@ -509,8 +513,8 @@ def test_seal_promotes_the_staged_recording(tmp_path):
 
 
 def test_seal_refuses_a_cassette_holding_a_configured_secret(tmp_path):
-    """Correction e with K7: the leak is named by path only, the manifest is never written, and the previous cassette
-    is left exactly as it was."""
+    """The leak is named by file path only, never by the secret; the manifest is never written, and the previous
+    cassette is left exactly as it was."""
     from nasdaq_agent.replay.http_cassette import HttpCassette
     from nasdaq_agent.replay.recording import CassetteSecretLeak, seal_recording, start_recording
     final = tmp_path / "cassette"
@@ -527,8 +531,8 @@ def test_seal_refuses_a_cassette_holding_a_configured_secret(tmp_path):
 
 
 def test_secret_scan_sees_escaped_and_encoded_forms(tmp_path):
-    """Correction e, widened in fix round 1 (minor 5): lowercase percent-encoding, "+" for spaces, and \\/-escaped
-    slashes as well as raw, JSON-escaped and upper-case percent-encoded forms."""
+    """The secret scan sees lowercase percent-encoding, "+" for spaces, and \\/-escaped slashes as well as raw,
+    JSON-escaped and upper-case percent-encoded forms."""
     from nasdaq_agent.replay.http_cassette import HttpCassette
     from nasdaq_agent.replay.recording import find_secret_leaks
     password = 'pa"ss\\w/ord&x y'
@@ -572,7 +576,7 @@ def test_llm_cache_key_ignores_what_a_cache_hit_changes(tmp_path):
 
 def test_keyed_source_recorded_with_a_key_replays_with_none_through_the_real_adapters(tmp_path, monkeypatch):
     """The zero-key pieces together, through build_deps and the real Massive adapter: a request recorded with this
-    machine's key (and the symbol file, correction k) replays from the cassette with no key held and no network."""
+    machine's key, and the symbol file recorded with it, replay from the cassette with no key held and no network."""
     import httpx
     import respx
     from nasdaq_agent.agent import graph
@@ -587,6 +591,7 @@ def test_keyed_source_recorded_with_a_key_replays_with_none_through_the_real_ada
     from tests.unit.test_universe import SAMPLE
     monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
     monkeypatch.setattr(sandbox_runner, "docker_available", lambda: False)
+    monkeypatch.setenv("AGENT_SANDBOX_BACKEND", "subprocess")  # without Docker, the fallback runs only by choice
     session, prev = date(2026, 9, 24), date(2026, 9, 23)
 
     def clock():
@@ -641,6 +646,7 @@ def test_sec_filings_recorded_with_a_contact_replay_offline_without_it(tmp_path,
     monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
     monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
     monkeypatch.setattr(sandbox_runner, "docker_available", lambda: False)
+    monkeypatch.setenv("AGENT_SANDBOX_BACKEND", "subprocess")  # without Docker, the fallback runs only by choice
     contact = "Jane Doe jane@example.com"
 
     def clock():
@@ -673,10 +679,10 @@ def test_sec_filings_recorded_with_a_contact_replay_offline_without_it(tmp_path,
         source = build(replay, "rep").news_sources[-1]
         assert source.name == "sec" and source.headlines("WETO", sec.SINCE, sec.UNTIL) == recorded
 
-# --- Fix round 1 --------------------------------------------------------------------------------------
+# --- Recorded failures, entry checks, quota, rounded floats and the recording environment -------------
 
 def test_recorded_source_replays_a_recorded_failure_with_the_same_type_and_message(tmp_path):
-    """K2: a failure seen while recording fails again on replay with the same text, so the model sees what it saw."""
+    """A failure seen while recording fails again on replay with the same text, so the model sees what it saw."""
     from nasdaq_agent.replay.proxies import RecordedSource
     from nasdaq_agent.sources.errors import SourceError, SourceUnavailable
 
@@ -731,7 +737,7 @@ def test_a_recorded_no_data_answer_replays_as_no_data(tmp_path):
 
 
 def test_http_client_replays_a_recorded_failure(tmp_path, monkeypatch):
-    """K2 for our own HTTP client: a request that exhausted its retries while recording fails the same way on replay."""
+    """A request through our own HTTP client that exhausted its retries while recording fails the same way on replay."""
     import httpx
     import respx
     from nasdaq_agent.replay.http_cassette import HttpCassette
@@ -766,7 +772,7 @@ def test_recorded_failure_names_no_class_to_build(tmp_path):
 
 
 def test_recorded_source_rejects_an_entry_of_the_wrong_shape(tmp_path):
-    """Fix round 1, minor 3: a list where the method returns a list, an object where it returns an object."""
+    """An entry must be a list where the method returns a list, and an object where it returns an object."""
     from nasdaq_agent.replay.proxies import RecordedSource
     from nasdaq_agent.sources.errors import CassetteMiss
     start, end = date(2026, 9, 17), date(2026, 9, 24)
@@ -786,7 +792,7 @@ def test_recorded_source_rejects_an_entry_of_the_wrong_shape(tmp_path):
 
 
 def test_alpha_vantage_quota_is_untouched_in_replay(tmp_path):
-    """K4: replay makes no call, so it spends no quota -- quota.json is neither read nor written."""
+    """Replay makes no call, so it spends no quota -- quota.json is neither read nor written."""
     from nasdaq_agent.replay.http_cassette import HttpCassette
     from nasdaq_agent.sources.alphavantage import ALPHAVANTAGE_URL, AlphaVantageGainerSource
     from nasdaq_agent.sources.http import DailyQuota, HttpClient, request_key
@@ -813,7 +819,7 @@ def test_alpha_vantage_quota_is_untouched_in_replay(tmp_path):
 
 
 def test_run_python_result_floats_are_rounded_for_the_model_only(ready, deps):
-    """K1: numpy builds can differ in the last digit across platforms, which would change the next prompt; the model
+    """Across platforms, numpy builds can differ in the last digit, which would change the next prompt; the model
     sees 6 decimal places, the run keeps full precision."""
     from nasdaq_agent.agent.tools.code import make_run_python
     precise = success(avg_daily_change_pct=2.15267912345678, volatility_annualized_pct=52.87400000000001,
@@ -847,7 +853,7 @@ def test_round_floats_normalises_negative_zero_and_leaves_other_values():
 
 
 def test_manifest_records_the_environment_and_the_exit_code(tmp_path):
-    """Important 2 and K6: the manifest names the recording environment and the run's exit code."""
+    """The manifest names the recording environment and the run's exit code."""
     import platform
     from importlib.metadata import version
     from nasdaq_agent.replay import llm_cache as lc
@@ -879,8 +885,8 @@ def test_environment_differences_name_each_difference():
 
 
 def test_cassette_miss_leads_with_the_environment_differences():
-    """Important 2: during a replay whose environment differs, every CassetteMiss says so, first -- run errors are cut
-    to a few hundred characters."""
+    """During a replay whose environment differs, every CassetteMiss says so, first -- run errors are cut to a few
+    hundred characters."""
     from nasdaq_agent.sources.errors import REPLAY_ENVIRONMENT_DIFFERENCES, CassetteMiss
     assert str(CassetteMiss("no recording for GET x")) == "no recording for GET x"
     token = REPLAY_ENVIRONMENT_DIFFERENCES.set(("numpy 2.1.3 recorded, 2.5.3 here", "sandbox backend docker recorded, subprocess here"))
@@ -894,7 +900,8 @@ def test_cassette_miss_leads_with_the_environment_differences():
 
 
 def test_compose_invalid_narrative_message_carries_no_pydantic_url(ready, deps):
-    """Important 2: the error text reaches the model, and pydantic's documentation URL names its version."""
+    """The error text reaches the model, and pydantic's documentation URL names its version, so an upgrade would
+    change the next prompt."""
     from nasdaq_agent.agent.tools.compose import make_compose_report
     _verified(ready, deps)
     out = make_compose_report(ready, deps).invoke({**_good_args(), "trend_paragraph": "x" * 900})
@@ -902,7 +909,7 @@ def test_compose_invalid_narrative_message_carries_no_pydantic_url(ready, deps):
     assert "errors.pydantic.dev" not in out and "http" not in out
 
 
-# --- Fix round 2: recording must never move or delete anything that is not a cassette ------------------
+# --- Recording must never move or delete anything that is not a cassette -------------------------------
 
 RUN_ID = "20260924T220000Z-abc123"
 
@@ -914,7 +921,8 @@ def _layout(root: Path) -> dict[str, bytes | None]:
 
 
 def _package_like(root: Path) -> Path:
-    """The reviewer's probe A and the graph probe: a package directory that happens to hold a "sources" subpackage."""
+    """A package directory that happens to hold a "sources" subpackage. tests/graph/test_record_replay.py records
+    into one through run_once."""
     (root / "sources" / "sub").mkdir(parents=True)
     (root / "__init__.py").write_text("")
     (root / "sources" / "__init__.py").write_text("")
@@ -937,7 +945,7 @@ def test_guard_refuses_a_package_directory_holding_a_sources_subpackage(tmp_path
 
 
 def test_guard_refuses_a_directory_whose_manifest_is_not_a_cassette_manifest(tmp_path):
-    """Probe B: a web app's public/ directory with a PWA manifest."""
+    """A web app's public/ directory with a PWA manifest."""
     public = tmp_path / "public"
     public.mkdir()
     (public / "manifest.json").write_text(json.dumps({"name": "app"}))
@@ -947,7 +955,7 @@ def test_guard_refuses_a_directory_whose_manifest_is_not_a_cassette_manifest(tmp
 
 
 def test_guard_refuses_the_repositorys_own_package_layout(tmp_path):
-    """Probe H: nasdaq_agent/ passed the name-based guard because it holds nasdaq_agent/sources/."""
+    """The repository's own nasdaq_agent/ once passed the name-based guard, because it holds nasdaq_agent/sources/."""
     from nasdaq_agent.replay.recording import CassetteDirectoryRefused, check_cassette_directory
     import nasdaq_agent
     copy = tmp_path / "nasdaq_agent"
@@ -960,7 +968,7 @@ def test_guard_refuses_the_repositorys_own_package_layout(tmp_path):
 
 
 def test_guard_refuses_a_home_like_directory_and_symlinks_inside_a_cassette(tmp_path):
-    """Probes C and G. The symlink targets hold entry-like files, so only the symlink itself can be the reason."""
+    """The symlink targets hold entry-like files, so only the symlink itself can be the reason for the refusal."""
     home = tmp_path / "home"
     (home / "sources" / "proj").mkdir(parents=True)
     (home / "sources" / "proj" / "main.c").write_text("int main(){}")
@@ -1017,7 +1025,7 @@ def test_guard_accepts_empty_missing_and_leftover_cassette_directories(tmp_path)
 
 
 def test_symlinked_cassette_path_resolves_and_only_the_targets_entries_change(tmp_path):
-    """Probe E: the path is resolved before anything else, staging included; the link itself is untouched."""
+    """The path is resolved before anything else, staging included; the link itself is untouched."""
     from nasdaq_agent.replay.http_cassette import HttpCassette
     from nasdaq_agent.replay.recording import seal_recording, staging_dir, start_recording
     real = tmp_path / "real" / "cassette"
@@ -1035,7 +1043,7 @@ def test_symlinked_cassette_path_resolves_and_only_the_targets_entries_change(tm
 
 
 def test_dotdot_cassette_path_resolves_before_the_staging_path(tmp_path):
-    """Probe F: a path through the cassette's own sources/ and back up put the staging directory inside sources/."""
+    """A path through the cassette's own sources/ and back up once put the staging directory inside sources/."""
     from nasdaq_agent.replay.http_cassette import HttpCassette
     from nasdaq_agent.replay.recording import seal_recording, start_recording
     cassette = tmp_path / "cassette"
@@ -1049,7 +1057,7 @@ def test_dotdot_cassette_path_resolves_before_the_staging_path(tmp_path):
 
 
 def test_promote_reverifies_each_entry_even_when_the_guard_is_bypassed(tmp_path, monkeypatch):
-    """Item 2: the destructive step checks again, so even a bypassed guard never moves or deletes other content."""
+    """The destructive step checks again, so even a bypassed guard never moves or deletes other content."""
     from nasdaq_agent.replay import recording
     from nasdaq_agent.replay.http_cassette import HttpCassette
     package = _package_like(tmp_path / "mypkg")
@@ -1090,7 +1098,7 @@ def test_deleting_cassette_entries_never_removes_anything_else(tmp_path):
 
 def test_failure_to_remove_the_backup_after_the_swap_is_a_warning_and_the_recording_is_sealed(tmp_path, monkeypatch,
                                                                                                caplog):
-    """Item 3: once the new cassette is live, cleanup trouble is a warning, never "recording not sealed"."""
+    """Once the new cassette is live, cleanup trouble is a warning, never "recording not sealed"."""
     from nasdaq_agent.replay import llm_cache as lc
     from nasdaq_agent.replay import recording
     from nasdaq_agent.replay.http_cassette import HttpCassette
@@ -1114,7 +1122,7 @@ def test_failure_to_remove_the_backup_after_the_swap_is_a_warning_and_the_record
 
 @pytest.mark.parametrize("failing_move", range(1, 8))
 def test_a_failed_swap_rolls_back_to_the_previous_cassette(tmp_path, monkeypatch, failing_move):
-    """The reviewer's rollback probe: whichever move fails, the previous cassette comes back byte for byte."""
+    """Whichever move fails, the previous cassette comes back byte for byte."""
     from nasdaq_agent.replay import recording
     from nasdaq_agent.replay.http_cassette import HttpCassette
     final = tmp_path / "cassette"
@@ -1148,7 +1156,7 @@ def test_a_failed_swap_rolls_back_to_the_previous_cassette(tmp_path, monkeypatch
 
 
 def test_recording_lock_is_exclusive_and_released(tmp_path):
-    """Item 5: one recording at a time per cassette, through an O_EXCL lock file beside the resolved directory."""
+    """One recording at a time per cassette, through an O_EXCL lock file beside the resolved directory."""
     from nasdaq_agent.replay.recording import RecordingInProgress, acquire_recording_lock, release_recording_lock
     lock = acquire_recording_lock(tmp_path / "cassette")
     assert lock.parent == tmp_path.resolve() and lock.exists()
@@ -1161,7 +1169,7 @@ def test_recording_lock_is_exclusive_and_released(tmp_path):
 
 
 def test_recorded_exit_code_reads_only_a_sealable_code(tmp_path):
-    """Item 4: a manifest is written only after exit 0 or 2, so a hand-edited 1 (or anything else) reads as missing."""
+    """A manifest is written only after exit 0 or 2, so a hand-edited 1 (or anything else) reads as missing."""
     from nasdaq_agent.replay import llm_cache as lc
     lc.write_manifest(tmp_path, NOW_ISO, exit_code=2)
     assert lc.recorded_exit_code(tmp_path) == 2
@@ -1172,7 +1180,7 @@ def test_recorded_exit_code_reads_only_a_sealable_code(tmp_path):
 
 
 def test_the_backup_is_verified_again_before_it_is_deleted(tmp_path, monkeypatch):
-    """Item 2's last layer: a file that appears in a moved-aside entry during the swap stops the deletion -- the swap
+    """A last check before deletion: a file that appears in a moved-aside entry during the swap stops it -- the swap
     is rolled back, the previous cassette comes back, and the file is kept."""
     from nasdaq_agent.replay import llm_cache as lc
     from nasdaq_agent.replay import recording

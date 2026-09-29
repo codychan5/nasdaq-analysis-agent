@@ -3,10 +3,10 @@ executes the model's analysis code and prints the result on a sentinel line.
 
 Defence in depth only. The Docker backend (a network-less, read-only container) is the real isolation
 boundary; this bootstrap is the backstop for the subprocess backend, which runs in the host interpreter.
-After the data is loaded it disables the network and wraps builtins.open/io.open (B6), then rebinds numpy's
-DataSource opener to the same guard (final residual 1b, since numpy captured the built-in open at import),
-so the model's code -- including numpy's own file readers -- cannot read files outside the sandbox or the
-interpreter's own installation, and cannot write files at all, even if the static gate (sandbox/gate.py)
+It disables the network before loading the data. After the data is loaded it wraps builtins.open/io.open,
+then rebinds numpy's DataSource opener to the same guard (since numpy captured the built-in open at import),
+so file access through those openers -- including numpy's own file readers -- is refused outside the sandbox
+and the interpreter's own installation, and refused for every write, even if the static gate (sandbox/gate.py)
 missed a name. It is not a substitute for the container.
 """
 from pathlib import Path
@@ -36,7 +36,7 @@ df = pd.read_csv("ticker.csv", parse_dates=["date"])
 bench = pd.read_csv("benchmark.csv", parse_dates=["date"])
 code = open(sys.argv[1]).read()
 
-# B6: with the data already loaded, restrict open() before running the model's code. Writes are
+# With the data already loaded, restrict open() before running the model's code. Writes are
 # refused outright; reads are allowed only under the sandbox directory or the interpreter's own
 # installation (so lazy library imports and package data keep working). Docker is the real boundary.
 _sandbox_root = Path(sys.argv[1]).resolve().parent
@@ -65,7 +65,7 @@ def _guarded_open(file, mode="r", *args, **kwargs):
 builtins.open = _guarded_open
 io.open = _guarded_open
 
-# Final residual 1b: numpy's DataSource captured the built-in open at import time
+# numpy's DataSource captured the built-in open at import time
 # (numpy/lib/_datasource.py: self._file_openers = {{None: open}}), before this wrapping, so
 # fromregex/loadtxt/genfromtxt and numpy.lib._datasource.open would keep using the unguarded open
 # even after the lines above. Rebind its default opener to the guarded one and clear its cached

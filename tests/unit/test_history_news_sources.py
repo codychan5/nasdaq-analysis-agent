@@ -108,3 +108,21 @@ def test_a_long_article_summary_is_cut_to_a_bounded_length_and_a_blank_one_is_no
     assert len(clean_summary("x" * (SUMMARY_MAX_CHARS + 50))) == SUMMARY_MAX_CHARS
     assert clean_summary("   ") is None and clean_summary(None) is None
     assert clean_summary("Line one.\n\nLine   two.") == "Line one. Line two."
+
+def test_yfinance_downloads_each_window_once_for_its_bars_and_splits(universe):
+    """find_top_gainer and the price check ask for a window's bars and then its splits: one download serves both, and a
+    different window still gets its own."""
+    from nasdaq_agent.sources.yahoo import YfinanceHistorySource
+    downloads = []
+
+    class CountingTicker(FakeTicker):
+        def history(self, *args, **kwargs):
+            downloads.append((self.symbol, kwargs.get("start"), kwargs.get("end")))
+            return super().history(*args, **kwargs)
+
+    src = YfinanceHistorySource(universe, ticker_factory=CountingTicker)
+    src.bars("BRK.B", date(2026, 9, 23), date(2026, 9, 24))
+    src.corporate_actions("BRK.B", date(2026, 9, 23), date(2026, 9, 24))
+    assert len(downloads) == 1
+    src.corporate_actions("BRK.B", date(2026, 9, 16), date(2026, 9, 24))
+    assert len(downloads) == 2

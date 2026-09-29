@@ -1,11 +1,12 @@
 from pathlib import Path
 
 from ..config import Settings
-from ..universe import Universe
+from ..universe import SessionUniverse, Universe
 from .alphavantage import ALPHAVANTAGE_DAILY_LIMIT, AlphaVantageGainerSource
 from .base import GainerSource, HistorySource, NewsSource
 from .http import DEFAULT_USER_AGENT, Cassette, DailyQuota, HttpClient, RateLimiter
-from .massive import MASSIVE_CALLS_PER_MINUTE, MassiveGainerSource, MassiveHistorySource, MassiveNewsSource
+from .massive import (MASSIVE_CALLS_PER_MINUTE, MassiveGainerSource, MassiveHistorySource, MassiveListingSource,
+                      MassiveNewsSource)
 from .nasdaqcom import NasdaqComGainerSource
 from .sec import SEC_CALLS_PER_SECOND, SecFilingsNewsSource
 from .yahoo import YahooScreenerGainerSource, YfinanceHistorySource, YfinanceNewsSource
@@ -32,7 +33,16 @@ def sec_rate_limiter() -> RateLimiter:
 # The argument is required and keyword-only, so no caller can quietly give one source a limiter of its own.
 
 
-def build_gainer_sources(settings: Settings, universe: Universe, state_dir: Path, cassette: Cassette | None = None,
+def build_listing_source(settings: Settings, cassette: Cassette | None = None,
+                         *, massive_limiter: RateLimiter) -> MassiveListingSource | None:
+    """Massive's list of NASDAQ securities for a past day, or None without a Massive key."""
+    if not settings.massive_api_key:
+        return None
+    return MassiveListingSource(make_http_client(settings, cassette, massive_limiter),
+                                settings.massive_api_key.get_secret_value())
+
+
+def build_gainer_sources(settings: Settings, universe: SessionUniverse, state_dir: Path, cassette: Cassette | None = None,
                          *, massive_limiter: RateLimiter) -> list[GainerSource]:
     sources: list[GainerSource] = []
     if settings.massive_api_key:

@@ -23,7 +23,7 @@ def test_build_chat_model_rejects_unprefixed(monkeypatch):
         llm.build_chat_model(Settings(_env_file=None), "orchestrator")
 
 def test_build_chat_model_sends_temperature_only_when_supported(monkeypatch):
-    # Controller correction 4: current Anthropic models reject sampling parameters with an
+    # Current Anthropic models reject sampling parameters with an
     # HTTP 400, so a model string starting with "anthropic:" must get no temperature kwarg;
     # every other provider still gets temperature=0. The same rule applies to the fallback
     # model, so a fallback that is itself an "anthropic:" model also gets no temperature.
@@ -123,7 +123,7 @@ def test_judge_prompt_and_parsing():
     assert "not instructions" in JUDGE_PROMPT and "Acme files for FDA review" in text and "11.0" in text
 
 def test_judge_includes_extra_facts_when_present():
-    # Review fix (Important): the judge previously never saw extra_facts, so it could flag a
+    # The judge must see extra_facts; without them it could flag a
     # session-move or closing-price sentence that grounding had already allowed as a lie.
     from nasdaq_agent.report.judge import make_judge
     from nasdaq_agent.report.schemas import JudgeVerdict
@@ -252,7 +252,7 @@ def test_every_provider_gets_the_model_call_timeout_and_retries(monkeypatch):
         llm.build_chat_model(Settings(_env_file=None), "orchestrator")
     assert len(captured) == 3
     assert all(kw["timeout"] == 45 and kw["max_retries"] == 1 for kw in captured.values())
-    assert all(kw["max_tokens"] == 8192 for kw in captured.values())
+    assert all(kw["max_tokens"] == 16384 for kw in captured.values())
 
 
 def test_real_clients_accept_the_timeout_and_retries(monkeypatch):
@@ -273,7 +273,7 @@ def test_real_clients_accept_the_timeout_and_retries(monkeypatch):
     monkeypatch.setenv("AGENT_LLM_MODEL", "anthropic:claude-opus-5")
     anthropic = llm.build_chat_model(Settings(_env_file=None), "orchestrator")
     assert anthropic.default_request_timeout == 90 and anthropic.max_retries == 2
-    assert openrouter.max_tokens == 8192 and google.max_output_tokens == 8192 and anthropic.max_tokens == 8192
+    assert openrouter.max_tokens == 16384 and google.max_output_tokens == 16384 and anthropic.max_tokens == 16384
 
 
 def _fake_openai_server(slow_seconds):

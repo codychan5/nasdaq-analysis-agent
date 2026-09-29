@@ -18,11 +18,12 @@ def test_logging_redacts_secrets(tmp_path, capsys):
     log.info("connecting with password=hunter2 and key sk-live-123", extra={"password": "hunter2"})
     line = (rd.path / "log.jsonl").read_text().strip().splitlines()[-1]
     assert "hunter2" not in line and "sk-live-123" not in line and "***" in line
-    assert "hunter2" not in capsys.readouterr().out
+    console = capsys.readouterr().err
+    assert "***" in console and "hunter2" not in console and "sk-live-123" not in console
 
 
 def test_logging_formats_percent_style_args_before_scrubbing(tmp_path):
-    # Controller correction 1: SecretRedactingFilter must format the record (substitute
+    # SecretRedactingFilter must format the record (substitute
     # %s-style args via record.getMessage()) before scrubbing, then clear args. Scrubbing
     # the raw format string and clearing args afterwards would turn every "tool %s: %s"
     # line into that literal, unsubstituted text instead of the redacted real message.
@@ -35,7 +36,7 @@ def test_logging_formats_percent_style_args_before_scrubbing(tmp_path):
 
 
 def test_configure_logging_closes_previous_handlers(tmp_path):
-    # Controller correction 2: configure_logging must close and remove existing handlers
+    # configure_logging must close and remove existing handlers
     # before adding new ones, so repeated calls in the same process (e.g. successive runs)
     # do not leak open log file descriptors.
     from nasdaq_agent.artifacts import RunDir, configure_logging
@@ -55,9 +56,9 @@ def test_configure_logging_closes_previous_handlers(tmp_path):
 
 
 def test_logging_scrubs_exception_text(tmp_path, capsys):
-    # Review finding: _JsonFormatter.format never serialised exception information, so
-    # log.exception(...) (used by the tool-crash handler in a later task) wrote a line with
-    # no exception type, message, or traceback. The fix must also scrub that text before it
+    # _JsonFormatter.format must serialise exception information; without it,
+    # log.exception(...) (used by ToolCrashMiddleware when a tool crashes) writes a line with
+    # no exception type, message, or traceback. That text must also be scrubbed before it
     # reaches any handler, so a secret embedded in an exception message cannot leak either.
     from nasdaq_agent.artifacts import RunDir, configure_logging
     rd = RunDir(tmp_path, "run-6")
@@ -71,4 +72,17 @@ def test_logging_scrubs_exception_text(tmp_path, capsys):
     assert "ValueError" in payload["exc"] and "***" in payload["exc"]
     assert "hunter2" not in payload["exc"]
     assert "hunter2" not in line
-    assert "hunter2" not in capsys.readouterr().out
+    console = capsys.readouterr().err
+    assert "ValueError" in console and "hunter2" not in console
+
+
+def test_log_lines_go_to_stderr_so_stdout_carries_only_the_result_line(tmp_path, capsys):
+    # Each run command prints one JSON result line on stdout, so `nasdaq-agent run | jq` reads only that line. The
+    # console copy of the log therefore goes to stderr.
+    from nasdaq_agent.artifacts import RunDir, configure_logging
+    rd = RunDir(tmp_path, "run-7")
+    log = configure_logging(rd, secrets=[])
+    log.info("fetching bars")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err.strip().splitlines()[-1])["msg"] == "fetching bars"

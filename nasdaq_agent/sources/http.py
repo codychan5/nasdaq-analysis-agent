@@ -19,6 +19,9 @@ from .errors import CassetteMiss, SourceError, SourceQuotaExceeded, SourceUnavai
 log = logging.getLogger(__name__)
 
 RETRY_ATTEMPTS = 3
+# Transport failures a second try can outlast: timeouts, network errors (connect, read, write, close) and a server that
+# hangs up mid-response. Other request errors, such as an unsupported protocol, would fail the same way every time.
+TRANSIENT_TRANSPORT_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
 RETRY_WAIT_MIN_SECONDS = 0.5
 RETRY_WAIT_MAX_SECONDS = 8.0
 RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
@@ -95,13 +98,13 @@ class Cassette(Protocol):
     mode: str  # "off", "record" or "replay"
     def lookup(self, key: str) -> tuple[int, str] | None: ...
     def store(self, key: str, status: int, text: str) -> None: ...
-    # Task 22 fix round 1 (K2): a request that failed after its retries while recording, so replay fails it the same
+    # A request that failed after its retries while recording, so replay fails it the same
     # way; lookup raises that recorded failure again.
     def store_failure(self, key: str, error: Exception) -> None: ...
 
 
 # Query parameters that carry a credential (Massive sends apiKey, Alpha Vantage apikey), compared case-insensitively.
-# They are left out of the request hash so a cassette recorded with keys replays with none (Task 22) -- and so the
+# They are left out of the request hash so a cassette recorded with keys replays with none -- and so the
 # cassette's file names never depend on a secret.
 CREDENTIAL_PARAMS = frozenset({"apikey", "api_key"})
 
@@ -183,7 +186,7 @@ class HttpClient:
 
     @property
     def replaying(self) -> bool:
-        """True when responses come from a replay cassette: no request is made, so no quota is spent (K4)."""
+        """True when responses come from a replay cassette: no request is made, so no quota is spent."""
         return self._cassette is not None and self._cassette.mode == "replay"
 
     @property
@@ -200,7 +203,7 @@ class HttpClient:
         try:
             status, text = self._fetch_live(url, params, headers)
         except SourceError as e:
-            # Task 22 fix round 1 (K2): our own failures only. SourceUnavailable carries no request details (see
+            # Only our own failures are recorded. SourceUnavailable carries no request details (see
             # _fetch_live), whereas a raw httpx error's text can name the full URL, credentials included.
             if self._recording:
                 self._cassette.store_failure(key, e)
@@ -223,10 +226,17 @@ class HttpClient:
         def attempt() -> tuple[int, str]:
             if self._rate_limiter is not None:
                 self._rate_limiter.acquire()
+            error_message: str | None = None
             try:
                 resp = self._client.get(url, params=params, headers=headers)
-            except (httpx.TimeoutException, httpx.ConnectError) as e:
+            except TRANSIENT_TRANSPORT_ERRORS as e:
                 raise TransientHttpError(str(e)) from e
+            except httpx.RequestError as e:
+                # Not worth retrying, such as an unsupported protocol, but still our own SourceError, so record mode
+                # stores it and replay repeats it. The type alone: a raw httpx error's text can name the full URL.
+                error_message = f"GET {url}: {type(e).__name__}"
+            if error_message is not None:
+                raise SourceError(error_message)  # outside the except block, so no raw httpx error is chained
             if resp.status_code in RETRYABLE_STATUSES:
                 if resp.status_code == RATE_LIMITED_STATUS:
                     raise RateLimitedHttpError(parse_retry_after(resp.headers.get("Retry-After"),

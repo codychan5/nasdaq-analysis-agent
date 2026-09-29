@@ -61,8 +61,8 @@ class ToolGatingMiddleware(AgentMiddleware):
 
 
 class RunDeadlineMiddleware(AgentMiddleware):
-    """Ends the agent loop once this invocation has run for `deadline_seconds` (spec section 5's whole-run deadline,
-    AGENT_RUN_DEADLINE_SECONDS; final fix wave A2).
+    """Ends the agent loop once this invocation has run for `deadline_seconds` (the whole-run deadline,
+    AGENT_RUN_DEADLINE_SECONDS).
 
     Checked before each model call, and the loop is ended the way ModelCallLimitMiddleware ends it: before_model
     returns a jump to the end with a closing AI message. The reason goes into ctx.errors, so the failure notice names
@@ -112,7 +112,7 @@ class PacingMiddleware(AgentMiddleware):
 
 class ToolCrashMiddleware(AgentMiddleware):
     """A bug inside a tool becomes an error message for the model instead of a crashed run. A replay CassetteMiss is
-    the exception: it propagates (final fix wave A3).
+    the exception: it propagates.
 
     Also serializes tool execution for the run. create_agent's ToolNode dispatches one model
     turn's tool calls concurrently on a real thread pool (langgraph's `get_executor_for_config`
@@ -148,18 +148,37 @@ class ToolCrashMiddleware(AgentMiddleware):
 MAX_NUDGES = 2
 NUDGE_MESSAGE = ("You replied without calling a tool, and the report has not been sent. Do not describe what you will "
                  "do: call one of the tools available now ({tools}), or give_up with a reason.")
+# How each supported provider's LangChain client marks a reply that stopped at the output-token limit, as a
+# response_metadata key and value: OpenRouter (the OpenAI API), Google, and Anthropic.
+OUTPUT_LIMIT_MARKERS = (("finish_reason", "length"), ("finish_reason", "MAX_TOKENS"), ("stop_reason", "max_tokens"))
+# A live run's model planned the whole report while recording sentiment: its thinking filled the reply's output
+# limit before any tool call, so the reply came back empty, and it did the same after each reminder.
+CUT_OFF_MESSAGE = ("Your last reply reached the output limit before it called a tool, so nothing was done. Do not "
+                   "draft later steps first: call one of the tools available now ({tools}), or give_up with a reason.")
+CUT_OFF_ERROR = ("the model's replies reached the output limit before calling a tool, {count} times; raise "
+                 "AGENT_LLM_MAX_OUTPUT_TOKENS")
+
+
+def reached_output_limit(message: AIMessage) -> bool:
+    """Whether the reply stopped at the output-token limit instead of ending on its own."""
+    metadata = message.response_metadata or {}
+    return any(metadata.get(key) == value for key, value in OUTPUT_LIMIT_MARKERS)
 
 
 class FinishTheRunMiddleware(AgentMiddleware):
     """A reply with no tool call ends create_agent's loop. A live run's model wrote "Let me try an alternative news
     source" instead of calling a tool, and the run stopped unsent. Until the report is sent or the agent gives up, a
     text-only reply earns a reminder and another turn, at most MAX_NUDGES times per invocation; the call caps and the
-    run deadline still bound the loop, and the reminder text is fixed, so replay stays deterministic."""
+    run deadline still bound the loop, and the reminder text is fixed, so replay stays deterministic.
+
+    A reply cut off at the output limit gets its own reminder, since it described nothing. If cut-off replies end the
+    loop, the reason goes into ctx.errors, so the failure notice names it."""
 
     def __init__(self, ctx: RunContext):
         super().__init__()
         self.ctx = ctx
         self.nudges = 0
+        self.cut_offs = 0
 
     @hook_config(can_jump_to=["model"])
     def after_model(self, state, runtime):
@@ -167,15 +186,28 @@ class FinishTheRunMiddleware(AgentMiddleware):
         last = messages[-1] if messages else None
         if not isinstance(last, AIMessage) or last.tool_calls:
             return None
-        if self.ctx.progress.sent or self.ctx.progress.gave_up or self.nudges >= MAX_NUDGES:
+        if self.ctx.progress.sent or self.ctx.progress.gave_up:
+            return None
+        cut_off = reached_output_limit(last)
+        if cut_off:
+            self.cut_offs += 1
+        if self.nudges >= MAX_NUDGES:
+            if cut_off:
+                self.ctx.errors.append(CUT_OFF_ERROR.format(count=self.cut_offs))
+                self.ctx.save()
             return None
         self.nudges += 1
-        log.info("model replied without a tool call before the report was sent; reminder %d of %d", self.nudges,
-                 MAX_NUDGES, extra={"event": "nudge", "run_id": self.ctx.run_id})
+        if cut_off:
+            log.warning("model reply reached the output limit before a tool call; reminder %d of %d", self.nudges,
+                        MAX_NUDGES, extra={"event": "nudge", "run_id": self.ctx.run_id})
+        else:
+            log.info("model replied without a tool call before the report was sent; reminder %d of %d", self.nudges,
+                     MAX_NUDGES, extra={"event": "nudge", "run_id": self.ctx.run_id})
         # Name the tools on offer right now: a live run's model kept promising a tool that was no longer offered.
         available = sorted(allowed_tool_names(self.ctx.progress,
                                               has_headlines=bool(self.ctx.news and self.ctx.news.headlines)) - {"give_up"})
-        return {"messages": [HumanMessage(NUDGE_MESSAGE.format(tools=", ".join(available) or "none"))], "jump_to": "model"}
+        template = CUT_OFF_MESSAGE if cut_off else NUDGE_MESSAGE
+        return {"messages": [HumanMessage(template.format(tools=", ".join(available) or "none"))], "jump_to": "model"}
 
 
 def build_middleware(ctx: RunContext, settings: Settings) -> list[AgentMiddleware]:
@@ -183,7 +215,7 @@ def build_middleware(ctx: RunContext, settings: Settings) -> list[AgentMiddlewar
     deadline or a call cap ends the loop, it ends without a pacing sleep first. (after_model hooks run in reverse list
     order; the two caps keep their relative order, so the tool-call check still runs after the model-call count.)
 
-    Final fix wave A1: the call caps are thread limits. Spec section 10 caps calls per run; the orchestrator's thread
+    The call caps are thread limits because they apply per run: the orchestrator's thread
     id is the run id, and a thread count is checkpointed with the thread, so a resume spends what is left of the run's
     budget. A run limit would reset on every invocation.
     """

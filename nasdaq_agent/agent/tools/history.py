@@ -36,7 +36,12 @@ def _fetch_complete(src, symbol: str, expected: list[date], notes: list[str]) ->
         res = check_completeness(wanted, expected)
         if res.ok:
             return wanted
-        notes.append(f"{src.name}: {symbol} missing {', '.join(d.isoformat() for d in res.missing)} (attempt {attempt + 1})")
+        problems = []
+        if res.missing:
+            problems.append(f"missing {', '.join(d.isoformat() for d in res.missing)}")
+        if res.duplicates:
+            problems.append(f"repeats {', '.join(d.isoformat() for d in res.duplicates)}")
+        notes.append(f"{src.name}: {symbol} {'; '.join(problems)} (attempt {attempt + 1})")
     return None
 
 
@@ -101,9 +106,8 @@ def make_get_price_history(ctx: RunContext, deps: Deps):
         if blocked:
             record_call(ctx, deps, "get_price_history", {"source": source}, blocked)
             return blocked
-        # Review fix (folded, this round): a finished stage must close. Once history is ready,
-        # re-fetching it could only pair the verified five-day metrics with different bars than
-        # the ones run_python and verify_analysis actually used.
+        # A finished stage must close. Once history is ready, re-fetching it could only pair the verified five-day
+        # metrics with different bars than the ones run_python and verify_analysis actually used.
         if ctx.progress.history_ready:
             outcome = err("precondition for get_price_history not met: history has already been fetched")
             record_call(ctx, deps, "get_price_history", {"source": source}, outcome)

@@ -16,7 +16,8 @@ CONSOLIDATE_NEXT = ("News is finished. The same story can come from more than on
                     "headline note per story, listing the ids of every headline that reports it.")
 NO_HEADLINES_NEXT = ("News is finished: every source was tried and none had headlines. Continue with compose_report and "
                      "leave news_paragraph and headline_notes empty.")
-REMAINING_NEXT = "call get_news again to gather the remaining sources, or continue without them"
+REMAINING_NEXT = ("call get_news again to gather the remaining sources: sentiment can be recorded only once the news "
+                  "step is finished")
 
 
 def _headline_view(h: Headline) -> dict:
@@ -27,20 +28,28 @@ def _headline_view(h: Headline) -> dict:
             "provider_sentiment": h.provider_sentiment}
 
 
+def _answered_sources(ctx: RunContext) -> list[str]:
+    """The sources whose headlines have been gathered, in the order they were asked."""
+    return list(dict.fromkeys(h.source for h in ctx.news_gathered if h.source))
+
+
+def finish_news_step(ctx: RunContext) -> NewsInfo:
+    """End the news step with every headline gathered so far, possibly none. get_news calls it once every source has
+    been tried; compose_report calls it when the model composes after asking only some sources by name, so their
+    headlines reach the report."""
+    ctx.news = NewsInfo(headlines=list(ctx.news_gathered), sources=_answered_sources(ctx))
+    ctx.progress.news_fetched = True
+    return ctx.news
+
+
 def make_get_news(ctx: RunContext, deps: Deps):
     def _record(requested: str, outcome: str) -> str:
         record_call(ctx, deps, "get_news", {"source": requested}, outcome)
         return outcome
 
-    def _answered() -> list[str]:
-        """The sources whose headlines have been gathered, in the order they were asked."""
-        return list(dict.fromkeys(h.source for h in ctx.news_gathered if h.source))
-
     def _close(requested: str) -> str:
         """Close the news step with every gathered headline, possibly none, and report them as quoted data."""
-        headlines = list(ctx.news_gathered)
-        ctx.news = NewsInfo(headlines=headlines, sources=_answered())
-        ctx.progress.news_fetched = True
+        headlines = finish_news_step(ctx).headlines
         result = {"note": UNTRUSTED_NOTE, "sources": ctx.news.sources, "headlines": [_headline_view(h) for h in headlines]}
         if headlines:
             result["next"] = CONSOLIDATE_NEXT
@@ -58,9 +67,8 @@ def make_get_news(ctx: RunContext, deps: Deps):
         blocked = precondition(ctx, "gainer_chosen", "get_news", "call find_top_gainer first")
         if blocked:
             return _record(source, blocked)
-        # Review fix (folded, this round): a finished stage must close. Once news has been
-        # fetched, re-running this tool could only replace the headlines record_sentiment and
-        # compose_report already used with a different set.
+        # A finished stage must close. Once news has been fetched, re-running this tool could only replace the headlines
+        # record_sentiment and compose_report already used with a different set.
         if ctx.progress.news_fetched:
             return _record(source, err("precondition for get_news not met: news has already been fetched"))
         since = datetime.combine(date.fromisoformat(ctx.session.date) - timedelta(days=deps.settings.news_lookback_days),
@@ -97,13 +105,13 @@ def make_get_news(ctx: RunContext, deps: Deps):
         remaining = [s.name for s in deps.news_sources if s.name not in tried_now]
         if remaining:
             # Only a named source leaves sources untried: report what has been gathered and what is left.
-            return _record(source, ok({"note": UNTRUSTED_NOTE, "sources": _answered(),
+            return _record(source, ok({"note": UNTRUSTED_NOTE, "sources": _answered_sources(ctx),
                                        "headlines": [_headline_view(h) for h in ctx.news_gathered],
                                        "remaining_sources": remaining, "next": REMAINING_NEXT}))
         if any(a.ok for a in ctx.news_sources_tried):
             return _close(source)
-        # B1: no eager degradation here. compose_report's _finish derives the news degradation from
-        # the final state at render time, so a named source that failed and was then retried
-        # successfully leaves no stale "news unavailable from every source" note behind.
+        # The news degradation is not recorded here. compose_report's _finish derives it from the final state at render
+        # time, so a named source that failed before another source succeeded leaves no stale "news unavailable from
+        # every source" note behind.
         return _record(source, err("no news source succeeded; you may continue without news, the report will note it"))
     return get_news

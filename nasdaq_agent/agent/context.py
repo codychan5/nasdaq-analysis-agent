@@ -48,6 +48,23 @@ class SkippedCandidate(Strict):
     reason: str
 
 
+class ExcludedCandidate(Strict):
+    """A stock a gainer source ranked above the ones it checked, which did not count for the session: not NASDAQ
+    common stock or an ADR that day. Kept so a run shows what the filter removed ahead of the pick."""
+    symbol: str
+    source: str
+    pct_change: float
+    reason: str
+
+
+class ListingInfo(Strict):
+    """Which list decided what counts: NASDAQ's symbol file ("nasdaqtrader") or, for a session before the file's day,
+    Massive's records for that session ("massive"). listed_on is the day the list describes."""
+    source: str
+    listed_on: str | None
+    common_stocks: int
+
+
 class GainerInfo(Strict):
     symbol: str
     company: str | None
@@ -91,19 +108,19 @@ class VerificationRow(Strict):
 
 
 class AnalysisInfo(Strict):
-    # Controller correction 3: mutable defaults use Field(default_factory=...) so
+    # Mutable defaults use Field(default_factory=...) so
     # separate RunContext instances never share the same list object.
     attempts: list[AttemptInfo] = Field(default_factory=list)
     latest_result: AnalysisResult | None = None
     verified_result: AnalysisResult | None = None
     verification: list[VerificationRow] = Field(default_factory=list)
     rejections: int = 0
-    # Review fix (Important): the attempt number whose result verify_analysis actually
+    # The attempt number whose result verify_analysis actually
     # verified, so compose_report can cite that attempt's code hash/backend instead of
     # whatever run_python call happened to be most recent (which may be a later, failed, or
     # still-unverified attempt).
     verified_attempt: int | None = None
-    # Review fix (Important): the attempt number verify_analysis last compared against the
+    # The attempt number verify_analysis last compared against the
     # verifier, whether it passed or was rejected. Calling verify_analysis again with no new
     # successful run_python call in between re-judges the same result and must refuse instead
     # of spending another rejection.
@@ -147,16 +164,18 @@ class RunContext(Strict):
     started_at: str
     settings_hash: str
     artifacts_path: str
-    # Tasks 22+23 fix round 1, Important 1: the mode the run started in; resume refuses any other. A context written
+    # The mode the run started in; resume refuses any other. A context written
     # before this field existed loads as live, the only mode those runs could have been resumed in.
     mode: Mode = Mode.live
-    # Controller correction 3: every mutable default (Progress, AnalysisInfo, and every
+    # Every mutable default (Progress, AnalysisInfo, and every
     # list field below) uses Field(default_factory=...) instead of a shared literal
     # instance/list, so two RunContext.new() calls never alias each other's state.
     progress: Progress = Field(default_factory=Progress)
     session: SessionInfo | None = None
     gainer: GainerInfo | None = None
     skipped_candidates: list[SkippedCandidate] = Field(default_factory=list)
+    excluded_candidates: list[ExcludedCandidate] = Field(default_factory=list)
+    listing: ListingInfo | None = None
     gainer_sources_tried: list[SourceAttempt] = Field(default_factory=list)
     history: HistoryInfo | None = None
     history_sources_tried: list[SourceAttempt] = Field(default_factory=list)
@@ -176,7 +195,7 @@ class RunContext(Strict):
     last_tool: str | None = None
     tool_calls: int = 0
     compose_rewrites: int = 0
-    # Fix round 1, K3: judge calls that failed ("judge unavailable"). A record run with any is not sealed: its
+    # Judge calls that failed ("judge unavailable"). A record run with any is not sealed: its
     # verdict is not in the cassette, so a replay would fail at the judge.
     judge_failures: int = 0
 

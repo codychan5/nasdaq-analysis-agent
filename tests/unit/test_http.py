@@ -184,3 +184,33 @@ def test_cassette_replay_miss_raises():
     from nasdaq_agent.sources.errors import CassetteMiss
     with pytest.raises(CassetteMiss):
         make_client(cassette=MemoryCassette("replay")).get_json("https://api.example.com/missing")
+
+@respx.mock
+def test_a_dropped_connection_is_retried_like_a_timeout():
+    route = respx.get("https://api.example.com/x").mock(side_effect=[
+        httpx.RemoteProtocolError("Server disconnected without sending a response."),
+        httpx.Response(200, json={"ok": True})])
+    _, sleep = recorded_waits()
+    assert make_client(retry_sleep=sleep).get_json("https://api.example.com/x") == {"ok": True}
+    assert route.call_count == 2
+
+@respx.mock
+def test_a_read_error_that_persists_ends_as_source_unavailable():
+    from nasdaq_agent.sources.errors import SourceUnavailable
+    route = respx.get("https://api.example.com/x").mock(side_effect=httpx.ReadError("connection reset by peer"))
+    _, sleep = recorded_waits()
+    with pytest.raises(SourceUnavailable) as exc_info:
+        make_client(retry_sleep=sleep).get_json("https://api.example.com/x", params={"apiKey": "SECRET"})
+    assert route.call_count == 3 and "SECRET" not in str(exc_info.value)
+
+@respx.mock
+def test_a_request_error_retrying_cannot_fix_fails_at_once_as_a_source_error():
+    """Still our own SourceError, so record mode stores it and replay repeats it, with no raw httpx error attached."""
+    from nasdaq_agent.sources.errors import SourceError, SourceUnavailable
+    route = respx.get("https://api.example.com/x").mock(side_effect=httpx.UnsupportedProtocol("unsupported protocol"))
+    _, sleep = recorded_waits()
+    with pytest.raises(SourceError) as exc_info:
+        make_client(retry_sleep=sleep).get_json("https://api.example.com/x", params={"apiKey": "SECRET"})
+    exc = exc_info.value
+    assert route.call_count == 1 and not isinstance(exc, SourceUnavailable)
+    assert exc.__cause__ is None and exc.__context__ is None and "SECRET" not in str(exc)

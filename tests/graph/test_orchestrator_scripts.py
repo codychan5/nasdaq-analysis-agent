@@ -82,9 +82,9 @@ def test_six_crashes_then_give_up(settings):
 
 def test_news_down_degrades(settings):
     script = happy_script()
-    # Controller correction 2: compose rejects a non-empty news paragraph when no headlines were
-    # fetched ("no headlines were fetched; leave news_paragraph empty"), so the script must pass
-    # an empty news_paragraph alongside the empty citations list.
+    # Compose rejects a non-empty news paragraph when no headlines were fetched ("no headlines
+    # were fetched; leave news_paragraph empty"), so the script must pass an empty
+    # news_paragraph alongside the empty citations list.
     script[7] = tc("compose_report", {**good_narrative().model_dump(), "news_paragraph": "", "citations": [], "headline_notes": []}, "c8")
     script.pop(6)  # no sentiment without news
     outcome, _ = run(settings, script, news_source=fakes.FakeNewsSource(error="503"))
@@ -93,7 +93,7 @@ def test_news_down_degrades(settings):
 
 
 def test_judge_outage_degrades_to_exit_2(settings):
-    # B1: a judge outage is a decoration -- the grounded report is still sent, and the run exits 2
+    # A judge outage is a decoration -- the grounded report is still sent, and the run exits 2
     # with a degradation note (not exit 0, and not a fatal exit 1).
     def judge_down(v, h, n, extra_facts=None, session_facts=None):
         raise RuntimeError("provider down")
@@ -104,7 +104,7 @@ def test_judge_outage_degrades_to_exit_2(settings):
 
 
 def test_chart_error_degrades_to_exit_2_and_sends_without_a_chart(settings, monkeypatch):
-    # B1: a chart error must never crash compose. The report renders and sends without the inline
+    # A chart error must never crash compose. The report renders and sends without the inline
     # chart, and the run exits 2 with a "chart unavailable" degradation.
     def boom(*a, **k):
         raise RuntimeError("matplotlib down")
@@ -116,7 +116,7 @@ def test_chart_error_degrades_to_exit_2_and_sends_without_a_chart(settings, monk
 
 
 def test_headlines_without_sentiment_degrade_to_exit_2(settings):
-    # B1: headlines were fetched but no sentiment was recorded -> "sentiment unavailable", exit 2.
+    # Headlines were fetched but no sentiment was recorded, so the run notes "sentiment unavailable" and exits 2.
     script = happy_script()
     script.pop(6)  # drop record_sentiment; get_news still fetches headlines
     outcome, _ = run(settings, script)
@@ -126,7 +126,7 @@ def test_headlines_without_sentiment_degrade_to_exit_2(settings):
 
 
 def test_failed_then_successful_news_source_leaves_no_degradation(settings):
-    # B1 (confirmed bug): a named news source fails, the auto chain then succeeds on the next one.
+    # A named news source fails, the auto chain then succeeds on the next one.
     # No stale "news unavailable from every source" must survive, so the run exits 0 with news present.
     news_sources = [fakes.FakeNewsSource("massive", error="HTTP 500"),
                     fakes.FakeNewsSource("yfinance", headlines=good_headlines())]
@@ -142,8 +142,8 @@ def test_judge_rejects_once(settings):
     verdicts = iter([JudgeVerdict(faithful=False, issues=[JudgeIssue(sentence="s", problem="overstates")]), JudgeVerdict(faithful=True)])
     script = happy_script(extra_before_send=[])
     script.insert(7, tc("compose_report", good_narrative().model_dump(), "c8a"))
-    # Controller correction 1: the judge is called as judge(verified, headlines, narrative,
-    # extra_facts=...), so every judge lambda -- including this one -- must accept that keyword.
+    # The judge is called as judge(verified, headlines, narrative, extra_facts=...,
+    # session_facts=...), so every judge lambda -- including this one -- must accept those keywords.
     outcome, _ = run(settings, script, judge=lambda v, h, n, extra_facts=None, session_facts=None: next(verdicts))
     ctx = load_ctx(outcome)
     assert outcome.exit_code == 0 and ctx.compose_rewrites == 1 and ctx.report.judge_faithful is True

@@ -77,7 +77,7 @@ class SubprocessRunner:
         self.limits, self.python_exe = limits, python_exe
 
     def run(self, code: str, sandbox_dir: Path) -> RunResult:
-        # Tasks 22+23 fix round 1, K9: absolute, as DockerRunner's volume mount already is. The child runs with the
+        # Make the sandbox path absolute, as DockerRunner's volume mount already is. The child runs with the
         # sandbox directory as its working directory, so a relative path to the bootstrap would be resolved against
         # the sandbox again and never found (the default AGENT_ARTIFACTS_DIR, ./runs, is relative).
         sandbox_dir = Path(sandbox_dir).resolve()
@@ -132,7 +132,7 @@ from typing import Callable
 
 from ..config import SandboxBackend
 
-# 0.2.0: pandas and numpy pinned to constraints.txt (Tasks 22+23 fix round 1). A new tag, so an image built from the
+# 0.2.0: pandas and numpy pinned to constraints.txt. A new tag, so an image built from the
 # old Dockerfile is never mistaken for one with the pinned versions.
 SANDBOX_IMAGE = "nasdaq-agent-sandbox:0.2.0"
 DOCKER_INFO_TIMEOUT_S = 5
@@ -242,27 +242,23 @@ class DockerRunner:
                          stderr_tail=tail(stderr), result=result)
 
 
-def select_runner(
-    backend: SandboxBackend, available: Callable[[], bool] = docker_backend_available
-) -> tuple[CodeRunner, str | None]:
-    """Docker when asked for or available; subprocess as the automatic fallback with a warning.
+def select_runner(backend: SandboxBackend, available: Callable[[], bool] = docker_backend_available) -> CodeRunner:
+    """Docker, unless the operator explicitly chose the subprocess sandbox. Both auto and docker refuse to run when
+    Docker cannot: the subprocess sandbox screens model-written code but does not isolate it, so it runs only by
+    explicit choice, never as a silent fallback. The refusal happens at setup, before any model call is paid for.
 
     `available` defaults to `docker_backend_available`, which requires both a reachable daemon
     and a built sandbox image: a daemon-only check would let `auto` select Docker and then fail
     every run with "Unable to find image".
     """
     if backend == SandboxBackend.subprocess:
-        return SubprocessRunner(), None
+        return SubprocessRunner()
     if available():
-        return DockerRunner(), None
-    if backend == SandboxBackend.docker:
-        raise RuntimeError(
-            "AGENT_SANDBOX_BACKEND=docker but the Docker daemon is not reachable or the sandbox "
-            f"image is missing; build it with: {SANDBOX_IMAGE_BUILD_CMD}"
-        )
-    warning = (
-        "Docker daemon or sandbox image unavailable; falling back to the subprocess sandbox "
-        f"(weaker isolation). Build the image with: {SANDBOX_IMAGE_BUILD_CMD}"
+        return DockerRunner()
+    # Kept under the failure notice's 300-character cap (finalize.MAX_ERROR_CHARS), prefix included, so both ways
+    # forward reach the operator whole.
+    raise RuntimeError(
+        "No Docker sandbox: the daemon is unreachable or the sandbox image is missing. "
+        f"Build it with: {SANDBOX_IMAGE_BUILD_CMD} "
+        "Or set AGENT_SANDBOX_BACKEND=subprocess for a sandbox that screens the code but does not isolate it."
     )
-    log.warning(warning)
-    return SubprocessRunner(), warning

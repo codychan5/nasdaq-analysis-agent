@@ -33,7 +33,7 @@ def make_verify_analysis(ctx: RunContext, deps: Deps):
     def verify_analysis() -> str:
         """Recompute every metric with reviewed code from the same bars and compare with your latest successful
         run. Passes when all metrics match within tolerance; otherwise returns a critique naming each mismatch."""
-        # Amendment: every return path below funnels through _record, so tool_log.jsonl gets
+        # Every return path below funnels through _record, so tool_log.jsonl gets
         # exactly one entry per call whatever the outcome, including the analysis-terminal guard.
         def _record(outcome: str) -> str:
             record_call(ctx, deps, "verify_analysis", {}, outcome)
@@ -44,7 +44,7 @@ def make_verify_analysis(ctx: RunContext, deps: Deps):
             return _record(blocked)
         if ctx.progress.analysis_terminal:
             return _record(err("analysis is terminal after repeated rejections; call give_up with a reason"))
-        # Review fix (Important): a finished stage must close. Once verified, hand back the
+        # A finished stage must close. Once verified, hand back the
         # stored result every time -- never recompute, never rewrite verification.json -- so a
         # repeat call (e.g. right before compose_report) can't drift from the number the report
         # will actually use or spend any more of the rejection/attempt budget.
@@ -52,7 +52,7 @@ def make_verify_analysis(ctx: RunContext, deps: Deps):
             return _record(ok({"verified": True, "metrics": ctx.analysis.verified_result.model_dump(),
                                "next": "get_news if not done, then compose_report"}))
         last_successful = _last_successful_attempt(ctx)
-        # Review fix (Important): this exact successful attempt was already compared against
+        # This exact successful attempt was already compared against
         # the verifier and rejected. Calling verify_analysis again with no new run_python call
         # in between would just re-judge identical numbers -- refuse without spending another
         # rejection, and tell the model what it actually needs to do next.
@@ -73,11 +73,12 @@ def make_verify_analysis(ctx: RunContext, deps: Deps):
         else:
             ctx.analysis.rejections += 1
             bad = [r.metric for r in rows if not r.ok]
-            # Fix round 1, K1: the model sees both values rounded (the model's comes from the sandbox's numpy); the
-            # verification rows keep full precision.
+            # The model sees both values rounded: the model's comes from the sandbox's numpy, whose builds can differ in
+            # the last digit between machines, and a full-precision value would change the next prompt and break
+            # replay. The verification rows keep full precision.
             lines = [f"{metric}: model {round_floats(getattr(model, metric))} vs verifier "
                      f"{round_floats(getattr(expected, metric))}; {_definition_line(metric)}" for metric in bad]
-            # Review fix (Important): reaching the run cap must end the analysis even when the
+            # Reaching the run cap must end the analysis even when the
             # rejection count alone has not exceeded MAX_REJECTIONS -- otherwise the model is
             # told to "run again" with no attempts left to spend, and only discovers the cap on
             # the next run_python call instead of here, where the decision actually belongs.

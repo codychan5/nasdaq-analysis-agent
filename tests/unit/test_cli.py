@@ -1,7 +1,8 @@
 # tests/unit/test_cli.py
-"""Task 23: the nasdaq-agent command line. The first three tests are the task plan's; the resume test uses --run-id and a
-well-formed id (corrections h and i). The rest cover correction d (one clean stderr line, exit 1, never a traceback or
-a settings value) and correction h (a user-supplied run id never becomes a path outside the artefacts directory)."""
+"""The nasdaq-agent command line: what each command runs and prints, with resume taking a well-formed id through
+--run-id; one clean stderr line and exit 1 for any error before a run exists, never a traceback or a settings value; a
+user-supplied run id that never becomes a path outside the artefacts directory; a run tied to the mode it started in;
+replay --check; usage errors exiting 1 through main(); and AGENT_SESSION_DATE, the trading day a run reports on."""
 import json
 import os
 from pathlib import Path
@@ -17,8 +18,8 @@ CREDENTIAL_VARIABLES = ("GOOGLE_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY",
 @pytest.fixture(autouse=True)
 def _hermetic_cwd(tmp_path, monkeypatch):
     """Settings reads ./.env by default; run every command from an empty directory so a developer's .env never leaks
-    into these tests. Fix round 1, minor 2: exported credentials and AGENT_* settings are cleared for the same reason;
-    each test sets what it needs."""
+    into these tests. Exported credentials and AGENT_* settings are cleared for the same reason; each test sets what
+    it needs."""
     monkeypatch.chdir(tmp_path)
     for name in [*CREDENTIAL_VARIABLES, *(n for n in os.environ if n.startswith("AGENT_"))]:
         monkeypatch.delenv(name, raising=False)
@@ -90,7 +91,7 @@ def test_env_file_option_is_read(monkeypatch, tmp_path):
     assert result.exit_code == 0 and seen == {"to": "alt@example.com", "bench": "QQQ"}
 
 
-# --- Correction d: clean errors before a run exists ------------------------------------------------------
+# --- Clean errors before a run exists --------------------------------------------------------------------
 
 def _single_clean_error_line(result) -> str:
     assert result.exit_code == 1
@@ -164,13 +165,13 @@ def test_real_run_directory_failure_is_a_clean_line(monkeypatch, tmp_path):
     assert line.startswith("nasdaq-agent: error:")
 
 
-# --- Correction h: a run id is validated before it becomes a path ------------------------------------------
+# --- A run id is validated before it becomes a path --------------------------------------------------------
 
 def test_validate_run_id_accepts_only_new_run_id_format():
     from nasdaq_agent.artifacts import new_run_id, validate_run_id
     assert validate_run_id(new_run_id())
     assert validate_run_id(WELL_FORMED_RUN_ID) == WELL_FORMED_RUN_ID
-    arabic_indic_digits = "٢٠٢٦٠٩٢٤T٢٢٠٠٠٠Z-abc123"  # fix round 1, minor 1: \d would accept these
+    arabic_indic_digits = "٢٠٢٦٠٩٢٤T٢٢٠٠٠٠Z-abc123"  # \d would accept these, so the pattern uses [0-9]
     for bad in ("../../etc", "abc", "20260924T220000Z-ABC123", WELL_FORMED_RUN_ID + "\n", "/" + WELL_FORMED_RUN_ID,
                 "20260924T220000Z-abc123/../x", "", arabic_indic_digits):
         with pytest.raises(ValueError):
@@ -229,7 +230,7 @@ def test_resume_refuses_a_recording(monkeypatch, tmp_path):
     assert sorted(p.name for p in (runs / WELL_FORMED_RUN_ID).iterdir()) == ["context.json"]
 
 
-# --- Fix round 1, Important 1: a run is tied to the mode it started in --------------------------------------
+# --- A run is tied to the mode it started in ----------------------------------------------------------------
 
 def _seed_run(runs: Path, mode, sent: bool = False) -> Path:
     from nasdaq_agent.agent.context import RunContext
@@ -257,8 +258,8 @@ def test_context_stores_the_mode_it_was_created_in(tmp_path):
 
 
 def test_resuming_a_replay_run_is_refused_in_any_mode_and_creates_nothing(monkeypatch, tmp_path):
-    """The reviewer's probe: a failed replay, resumed with the default (live) mode, ran live and sent real mail built
-    from cassette data. Replay runs cannot be resumed at all -- rerunning replay is cheap."""
+    """A failed replay, resumed with the default (live) mode, once ran live and sent real mail built from cassette
+    data. Replay runs cannot be resumed at all -- rerunning replay is cheap."""
     runs = _artifacts_env(monkeypatch, tmp_path)
     from nasdaq_agent.agent.graph import resume_run
     from nasdaq_agent.config import Mode
@@ -318,7 +319,7 @@ def test_resume_with_changed_settings_warns_but_proceeds(monkeypatch, tmp_path):
     assert any(line["level"] == "WARNING" and "settings changed" in line["msg"] for line in lines)
 
 
-# --- Fix round 1, K6: replay --check ------------------------------------------------------------------------
+# --- replay --check -----------------------------------------------------------------------------------------
 
 def _cassette_env(monkeypatch, tmp_path, recorded_exit_code):
     from nasdaq_agent.replay import llm_cache as lc
@@ -362,7 +363,7 @@ def test_replay_without_check_keeps_the_runs_own_exit_code(monkeypatch, tmp_path
     assert result.exit_code == 2 and "check" not in json.loads(result.stdout.strip().splitlines()[-1])
 
 
-# --- Fix round 1, K8: usage errors exit 1 through main() -----------------------------------------------------
+# --- Usage errors exit 1 through main() ----------------------------------------------------------------------
 
 def test_console_script_runs_main():
     import tomllib
@@ -395,3 +396,79 @@ def test_main_help_exits_zero(capsys):
     with pytest.raises(SystemExit) as exited:
         cli.main(["--help"])
     assert exited.value.code == 0 and "replay" in capsys.readouterr().out
+
+
+# --- AGENT_SESSION_DATE: the trading day a run reports on -----------------------------------------------
+
+PINNED_JULY_8 = "2026-07-08T16:30:00-04:00"
+
+
+def _capture_run_once(monkeypatch, cli):
+    from nasdaq_agent.agent.graph import RunOutcome
+    seen = {}
+    def fake_run_once(settings, now=None, **kw):
+        seen["now"], seen["mode"] = now, settings.mode.value
+        return RunOutcome(run_id="r1", exit_code=0, artifacts_path="/tmp/r1")
+    monkeypatch.setattr(cli, "run_once", fake_run_once)
+    return seen
+
+
+@pytest.mark.parametrize("command", ["run", "record"])
+def test_a_session_date_pins_the_runs_clock(monkeypatch, command):
+    monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
+    monkeypatch.setenv("AGENT_SESSION_DATE", "2026-07-08")
+    from nasdaq_agent import cli
+    seen = _capture_run_once(monkeypatch, cli)
+    result = CliRunner().invoke(cli.app, [command])
+    assert result.exit_code == 0 and seen["now"].isoformat() == PINNED_JULY_8
+
+
+def test_a_session_date_and_now_together_are_refused(monkeypatch):
+    monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
+    monkeypatch.setenv("AGENT_SESSION_DATE", "2026-07-08")
+    from nasdaq_agent import cli
+    monkeypatch.setattr(cli, "run_once", lambda *a, **k: pytest.fail("no run may start with two clocks"))
+    line = _single_clean_error_line(CliRunner().invoke(cli.app, ["run", "--now", "2026-09-24T22:00:00+00:00"]))
+    assert "--now" in line and "AGENT_SESSION_DATE" in line
+
+
+def test_a_session_date_that_is_not_a_trading_day_is_a_clean_error(monkeypatch):
+    monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
+    monkeypatch.setenv("AGENT_SESSION_DATE", "2026-07-04")
+    from nasdaq_agent import cli
+    monkeypatch.setattr(cli, "run_once", lambda *a, **k: pytest.fail("no run may start for a day without a session"))
+    line = _single_clean_error_line(CliRunner().invoke(cli.app, ["run"]))
+    assert "AGENT_SESSION_DATE" in line and "not a NASDAQ trading day" in line
+
+
+def test_the_scheduler_refuses_a_session_date(monkeypatch):
+    monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
+    monkeypatch.setenv("AGENT_SESSION_DATE", "2026-07-08")
+    from nasdaq_agent import cli
+    monkeypatch.setattr(cli, "run_on_schedule", lambda *a, **k: pytest.fail("a pinned day must never run on a schedule"))
+    line = _single_clean_error_line(CliRunner().invoke(cli.app, ["schedule"]))
+    assert "AGENT_SESSION_DATE" in line
+
+
+def test_replay_says_it_uses_the_recordings_day_instead_of_a_session_date(monkeypatch):
+    monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
+    monkeypatch.setenv("AGENT_SESSION_DATE", "2026-07-08")
+    from nasdaq_agent import cli
+    seen = _capture_run_once(monkeypatch, cli)
+    result = CliRunner().invoke(cli.app, ["replay"])
+    assert result.exit_code == 0 and seen["mode"] == "replay" and seen["now"] is None
+    assert "AGENT_SESSION_DATE" in result.stderr
+
+
+def test_a_resumed_run_keeps_the_session_dates_clock(monkeypatch):
+    monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
+    monkeypatch.setenv("AGENT_SESSION_DATE", "2026-07-08")
+    from nasdaq_agent import cli
+    from nasdaq_agent.agent.graph import RunOutcome
+    seen = {}
+    def fake_resume_run(settings, run_id, now=None, **kw):
+        seen["now"] = now
+        return RunOutcome(run_id, 0, "/tmp/x")
+    monkeypatch.setattr(cli, "resume_run", fake_resume_run)
+    result = CliRunner().invoke(cli.app, ["resume", "--run-id", WELL_FORMED_RUN_ID])
+    assert result.exit_code == 0 and seen["now"].isoformat() == PINNED_JULY_8

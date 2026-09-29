@@ -93,7 +93,7 @@ def test_validation_error_hides_sensitive_input(monkeypatch):
     assert "hunter2" not in message
 
 def test_secret_field_names_matches_current_secretstr_fields():
-    """Fix round 1, item 10: introspected, not a second hand-written list -- so a future
+    """The secret field names are introspected, not a second hand-written list -- so a future
     SecretStr field is picked up automatically instead of silently missing redaction."""
     from nasdaq_agent.config import Settings
     assert Settings.secret_field_names() == frozenset({
@@ -121,7 +121,7 @@ def test_run_deadline_defaults_to_600_seconds_and_reads_the_environment(monkeypa
 
 @pytest.mark.parametrize("value", ["0", "-5", "1.5", "ten"])
 def test_run_deadline_must_be_a_positive_integer(monkeypatch, value):
-    """Final fix wave A2: the deadline middleware reads this, so a zero, negative or fractional deadline is refused
+    """The deadline middleware reads this, so a zero, negative or fractional deadline is refused
     when settings load rather than ending every run before its first model call."""
     monkeypatch.setenv("AGENT_EMAIL_TO", "reports@example.com")
     monkeypatch.setenv("AGENT_RUN_DEADLINE_SECONDS", value)
@@ -130,7 +130,7 @@ def test_run_deadline_must_be_a_positive_integer(monkeypatch, value):
         Settings(_env_file=None)
 
 def test_quality_preset_setting_is_gone(tmp_path):
-    """Final fix wave A9: the opt-in quality-preset extension was never built, so its setting is removed rather than
+    """The opt-in quality-preset extension was never built, so its setting is removed rather than
     left inert. Settings rejects unknown keys, so an .env that still sets it now fails to load (a breaking change for
     an .env copied from an older .env.example)."""
     from nasdaq_agent import config
@@ -156,10 +156,11 @@ def test_model_call_timeout_and_retries_have_defaults_and_are_validated(monkeypa
 
 def test_model_output_cap_has_a_default_and_is_validated(monkeypatch):
     # OpenRouter reserves credit for the largest reply a model may give; an uncapped call failed a live run with
-    # "requires more credits, or fewer max_tokens". Reasoning models think within the cap, so it leaves headroom.
+    # "requires more credits, or fewer max_tokens". Reasoning models think within the cap: GLM-5.3's compose_report
+    # replies reached 7,920 of 8,192 tokens, and one run failed after three replies were cut off at 8,192.
     monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
     from nasdaq_agent.config import Settings
-    assert Settings(_env_file=None).llm_max_output_tokens == 8192
+    assert Settings(_env_file=None).llm_max_output_tokens == 16384
     monkeypatch.setenv("AGENT_LLM_MAX_OUTPUT_TOKENS", "0")
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
@@ -239,3 +240,47 @@ def test_sec_user_agent_up_to_the_limit_is_kept_trimmed_and_treated_as_sensitive
     s = Settings(_env_file=None)
     assert s.sec_user_agent.get_secret_value() == longest
     assert "jane@example.com" not in repr(s) and longest in s.secret_values()
+
+@pytest.mark.parametrize("field", ["AGENT_EMAIL_TO", "AGENT_SMTP_FROM"])
+def test_an_email_address_with_a_trailing_newline_is_rejected(monkeypatch, field):
+    """A newline makes the address header invalid, so every send, the failure notice included, would fail."""
+    from nasdaq_agent.config import Settings
+    monkeypatch.setenv("AGENT_EMAIL_TO", "reports@example.com")
+    monkeypatch.setenv(field, "ops@example.com\n")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+@pytest.mark.parametrize("value", ["4", "10", "0", "-1"])
+def test_the_lookback_must_match_the_five_return_metrics(monkeypatch, value):
+    """The metrics and their verifier are defined over exactly five daily returns, so any other window fails every run."""
+    from nasdaq_agent.config import Settings
+    monkeypatch.setenv("AGENT_EMAIL_TO", "reports@example.com")
+    monkeypatch.setenv("AGENT_LOOKBACK_SESSIONS", value)
+    with pytest.raises(ValidationError, match="lookback_sessions must be 5"):
+        Settings(_env_file=None)
+
+
+def test_session_date_is_empty_by_default_and_blank_means_empty(monkeypatch):
+    monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
+    from nasdaq_agent.config import Settings
+    assert Settings(_env_file=None).session_date is None
+    monkeypatch.setenv("AGENT_SESSION_DATE", "  ")
+    assert Settings(_env_file=None).session_date is None
+
+
+def test_session_date_reads_a_calendar_date(monkeypatch):
+    from datetime import date
+    monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
+    monkeypatch.setenv("AGENT_SESSION_DATE", "2026-07-08")
+    from nasdaq_agent.config import Settings
+    assert Settings(_env_file=None).session_date == date(2026, 7, 8)
+
+
+@pytest.mark.parametrize("bad", ["07/08/2026", "2026-7-8", "1751932800", "2026-02-30", "yesterday"])
+def test_session_date_accepts_only_a_real_yyyy_mm_dd_date(monkeypatch, bad):
+    """A number would otherwise be read as a Unix timestamp, and a day-first or month-first date is ambiguous."""
+    monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
+    monkeypatch.setenv("AGENT_SESSION_DATE", bad)
+    from nasdaq_agent.config import Settings
+    with pytest.raises(ValidationError, match="session_date"):
+        Settings(_env_file=None)

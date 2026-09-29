@@ -1,6 +1,6 @@
-"""Final fix wave A5: send markers are written atomically, and a marker that exists but cannot be read is "unknown" --
-treated exactly like "sending" (a send attempt began and its outcome is not known), never as "none" and never as an
-exception. The finalize wording for "unknown" is tested in test_finalize.py."""
+"""Send markers are written atomically, and a marker that exists but cannot be read is "unknown" -- treated exactly like
+"sending" (a send attempt began and its outcome is not known), never as "none" and never as an exception. The finalize
+wording for "unknown" is tested in test_finalize.py."""
 import errno
 import json
 import logging
@@ -139,10 +139,10 @@ def test_begin_stays_exclusive_and_fsyncs_its_content(tmp_path, monkeypatch):
 
 
 def test_begin_and_update_fsync_the_markers_directory(tmp_path, monkeypatch):
-    """Follow-up: fsync on a file makes its content durable, but the entry naming it lives in the directory. A power
-    loss right after begin() must not lose the marker, or a resume could send twice, so begin() fsyncs the marker's
-    directory after the file, and an update fsyncs it after os.replace. Each fsynced descriptor is identified with
-    fstat while it is still open."""
+    """fsync on a file makes its content durable, but the entry naming it lives in the directory. A power loss right
+    after begin() must not lose the marker, or a resume could send twice, so begin() fsyncs the marker's directory after
+    the file, and an update fsyncs it after os.replace. Each fsynced descriptor is identified with fstat while it is
+    still open."""
     from nasdaq_agent.email.idempotency import SendMarker
     from nasdaq_agent.email.transports import SendResult
     directory = os.stat(tmp_path)
@@ -178,8 +178,8 @@ def test_begin_and_update_fsync_the_markers_directory(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("refused", ["open", "fsync"])
 def test_a_directory_that_cannot_be_fsynced_never_fails_the_marker_write(tmp_path, monkeypatch, caplog, refused):
-    """Follow-up: the directory fsync is best-effort. Some filesystems reject fsync on a directory, or opening one; the
-    failure is logged at debug level and the write stands, since the file itself is already fsynced."""
+    """The directory fsync is best-effort. Some filesystems reject fsync on a directory, or opening one; the failure is
+    logged at debug level and the write stands, since the file itself is already fsynced."""
     from nasdaq_agent.email.idempotency import SendMarker
     from nasdaq_agent.email.transports import SendResult
     real_open, real_fsync = os.open, os.fsync

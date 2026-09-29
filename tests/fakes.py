@@ -45,7 +45,7 @@ def acme_candidate(source="massive", pct=3.738):
     return Candidate(symbol="ACME", name="Acme Corp", prev_close=10.70, close=11.10, pct_change=pct, volume=1000, source=source)
 
 def clock_after_close():
-    # Controller correction: the market closes at 16:00 America/New_York. 18:00 UTC is only
+    # The market closes at 16:00 America/New_York. 18:00 UTC is only
     # 14:00 New York (EDT, UTC-4 in September) -- still inside the trading session -- so a
     # clock meant to represent "after the close" must be timezone-converted, not just any UTC
     # afternoon. 22:00 UTC is 18:00 New York, two hours past the 16:00 close.

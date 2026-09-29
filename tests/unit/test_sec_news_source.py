@@ -239,6 +239,155 @@ def test_a_replay_missing_the_document_request_fails_instead_of_dropping_the_doc
         SecFilingsNewsSource(HttpClient(1, 1, cassette=cassette)).headlines("WETO", since=SINCE, until=UNTIL)
 
 
+# Kodiak Sciences' 8-K of 28 September 2026: Item 8.01 "Other Events", with its press release attached as Exhibit 99.1.
+# EDGAR serves each document with its header (type, sequence, file name, description) ahead of the HTML, as here.
+KOD_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK0001468748.json"
+KOD_SINCE = datetime(2026, 9, 25, tzinfo=timezone.utc)
+KOD_UNTIL = datetime(2026, 9, 29, 13, 14, 22, tzinfo=timezone.utc)
+KOD_ACCESSION = "0001193125-26-403481"
+KOD_EXHIBIT_URL = "https://www.sec.gov/Archives/edgar/data/1468748/000119312526403481/d185059dex991.htm"
+KOD_TITLE_START = "Kodiak Sciences Inc. filed a Form 8-K with the SEC: "
+KOD_RELEASE_HEADLINE = ("Zenkuda and tabirafusp-ted Meet Primary Endpoints in Pivotal DAYBREAK Trial in wAMD, with Zenkuda "
+                        "Demonstrating a Potential New Standard-of-Care Profile with Strong Immediacy and Sustained "
+                        "Clinical Effect with Majority of Patients on 24-week Dosing Interval Using Strict "
+                        "Treat-to-Dryness Real World Retreatment Criteria.")
+KOD_PRESS_RELEASE = """<DOCUMENT>
+<TYPE>EX-99.1
+<SEQUENCE>2
+<FILENAME>d185059dex991.htm
+<DESCRIPTION>EX-99.1
+<TEXT>
+<HTML><HEAD>
+<TITLE>EX-99.1</TITLE>
+</HEAD>
+ <BODY BGCOLOR="WHITE">
+<P ALIGN="right"><B>Exhibit 99.1 </B></P>
+<P><B>Zenkuda and tabirafusp-ted Meet Primary Endpoints in Pivotal DAYBREAK Trial in wAMD, with Zenkuda Demonstrating a
+Potential New <FONT STYLE="white-space:nowrap">Standard-of-Care</FONT> Profile with Strong Immediacy and Sustained Clinical
+Effect with Majority of Patients on <FONT STYLE="white-space:nowrap">24-week</FONT> Dosing Interval Using
+Strict Treat-to-Dryness Real World Retreatment Criteria. </B></P>
+<SCRIPT>trackVisit()</SCRIPT>
+<UL><LI>Zenkuda (tarcocimab tedromer) met the primary endpoint (p-value of 0.0007) with the majority of patients (54%)
+on 6-month dosing</LI></UL>
+<P>PALO ALTO, Calif., September 28, 2026 /PRNewswire/ &#8212; Kodiak Sciences Inc. (Nasdaq: KOD) today announced that
+the primary endpoints were met for both Zenkuda and tabirafusp-ted in the Phase 3 DAYBREAK study.</P>
+</BODY></HTML>
+</TEXT>
+</DOCUMENT>"""
+KOD_DOCUMENTS = _search_payload([
+    _document(KOD_ACCESSION, "d185059d8k.htm", "8-K", "8-K", 1, form="8-K"),
+    _document(KOD_ACCESSION, "d185059dex991.htm", "EX-99.1", "EX-99.1", 2, form="8-K"),
+    _document(KOD_ACCESSION, "kod-20260928.xsd", "EX-101.SCH", "XBRL TAXONOMY EXTENSION SCHEMA", 3, form="8-K")])
+KOD_FILING = _filing(KOD_ACCESSION, "2026-09-28T12:53:56.000Z", form="8-K", items="8.01,9.01")
+KOD_COMPANY_SEARCH = _search_payload([_entity("1468748", "Kodiak Sciences Inc.", "KOD")])
+KOD_FILING_LIST = _submissions([KOD_FILING]) | {"cik": "1468748", "name": "Kodiak Sciences Inc.", "tickers": ["KOD"]}
+KOD_DOCUMENTS_PARAMS = {"q": '"Kodiak"', "ciks": "0001468748", "dateRange": "custom", "startdt": "2026-09-28",
+                        "enddt": "2026-09-28"}
+METADATA_ONLY = "The filing's text was not read, so what it says, including any terms, is unknown here."
+
+
+def _mock_kod(documents=KOD_DOCUMENTS):
+    """Kodiak's company search, filing list and document names; returns the route for its exhibit."""
+    respx.get(SEARCH_URL, params={"keysTyped": "KOD"}).mock(return_value=httpx.Response(200, json=KOD_COMPANY_SEARCH))
+    respx.get(KOD_SUBMISSIONS_URL).mock(return_value=httpx.Response(200, json=KOD_FILING_LIST))
+    respx.get(SEARCH_URL, params={"ciks": "0001468748"}).mock(return_value=httpx.Response(200, json=documents))
+    return respx.get(KOD_EXHIBIT_URL)
+
+
+@respx.mock
+def test_a_press_release_filed_as_exhibit_99_gives_the_headline_its_title_and_opening_words():
+    # The 8-K itself said only "Other Events"; the press release attached to it said why the stock nearly tripled.
+    _mock_kod().mock(return_value=httpx.Response(200, text=KOD_PRESS_RELEASE))
+    [h] = _source().headlines("KOD", since=KOD_SINCE, until=KOD_UNTIL)
+    # The release's own headline replaces the item names, shortened at a word to keep the title readable.
+    assert h.title.startswith(KOD_TITLE_START + "Zenkuda and tabirafusp-ted Meet Primary Endpoints in Pivotal DAYBREAK")
+    assert h.title.endswith("…") and len(h.title) < len(KOD_TITLE_START + KOD_RELEASE_HEADLINE)
+    assert "Items reported: Other Events." in h.summary
+    # The opening words go into the summary, which the model writes its story note from: the headline, then the text.
+    assert f'Exhibit 99.1 opens: "{KOD_RELEASE_HEADLINE} Zenkuda (tarcocimab tedromer) met the primary endpoint' in h.summary
+    assert "(p-value of 0.0007)" in h.summary and "Nasdaq: KOD) today announced" in h.summary
+    # EDGAR's document header, the page title and scripts are not text a reader would see.
+    assert "d185059dex991.htm" not in h.summary and "trackVisit" not in h.summary and "Exhibit 99.1 Zenkuda" not in h.summary
+    # Said plainly, as with the label-only note: only the opening was read, so the rest is unknown.
+    assert "Only the opening of Exhibit 99.1 was read, so anything later in the filing is unknown here." in h.summary
+    assert METADATA_ONLY not in h.summary
+
+
+@respx.mock
+def test_a_long_list_of_documents_never_cuts_the_exhibit_note_or_opening():
+    # The summary is bounded; when a filing lists many documents, the list is what gets cut, not what the release says.
+    contracts = [_document(KOD_ACCESSION, f"d185059dex10{i}.htm", f"EX-10.{i}",
+                           f"MATERIAL CONTRACT NUMBER {i} WITH A LONG DESCRIPTION OF ITS PARTIES", i + 2, form="8-K")
+                 for i in range(1, 25)]
+    _mock_kod(_search_payload([*KOD_DOCUMENTS["hits"]["hits"], *contracts])).mock(
+        return_value=httpx.Response(200, text=KOD_PRESS_RELEASE))
+    [h] = _source().headlines("KOD", since=KOD_SINCE, until=KOD_UNTIL)
+    from nasdaq_agent.sources.models import SUMMARY_MAX_CHARS
+    assert len(h.summary) <= SUMMARY_MAX_CHARS
+    assert "Only the opening of Exhibit 99.1 was read, so anything later in the filing is unknown here." in h.summary
+    assert 'Exhibit 99.1 opens: "Zenkuda' in h.summary and 'dosing' in h.summary
+
+
+@respx.mock
+def test_a_release_label_before_the_headline_is_not_taken_for_the_headline():
+    # Many releases open with "FOR IMMEDIATE RELEASE" or "Press Release" above the headline.
+    release = KOD_PRESS_RELEASE.replace('<P ALIGN="right"><B>Exhibit 99.1 </B></P>',
+                                        '<P ALIGN="right"><B>Exhibit 99.1 </B></P><P>FOR IMMEDIATE RELEASE</P><P>Press Release</P>')
+    _mock_kod().mock(return_value=httpx.Response(200, text=release))
+    [h] = _source().headlines("KOD", since=KOD_SINCE, until=KOD_UNTIL)
+    assert h.title.startswith(KOD_TITLE_START + "Zenkuda and tabirafusp-ted Meet")
+    assert 'Exhibit 99.1 opens: "Zenkuda and tabirafusp-ted Meet' in h.summary
+
+
+@pytest.mark.parametrize("response", [
+    httpx.Response(403),                  # www.sec.gov refuses a request that does not declare a contact
+    httpx.Response(200, text="<HTML><BODY><IMG SRC='chart.jpg'></BODY></HTML>"),  # nothing a reader would call text
+])
+@respx.mock
+def test_a_filing_keeps_its_label_only_headline_when_its_exhibit_cannot_be_read(response, caplog):
+    # The exhibit only enriches the headline; the filing itself is still news.
+    _mock_kod().mock(return_value=response)
+    with caplog.at_level(logging.WARNING):
+        [h] = _source().headlines("KOD", since=KOD_SINCE, until=KOD_UNTIL)
+    assert h.title == KOD_TITLE_START + "Other Events"
+    assert METADATA_ONLY in h.summary and "opens:" not in h.summary
+    assert "Exhibit 99.1" in caplog.text
+
+
+@pytest.mark.parametrize("name", ["../../../cgi-bin/browse-edgar", "https://example.com/x.htm", "d185059dex991.pdf", ""])
+@respx.mock
+def test_an_exhibit_whose_file_name_is_not_a_plain_document_name_is_never_requested(name):
+    # The name comes from a search result and goes into a URL, so only a plain EDGAR file name is used.
+    _mock_kod(_search_payload([_document(KOD_ACCESSION, name, "EX-99.1", "EX-99.1", 2, form="8-K")]))
+    any_document = respx.get(url__startswith="https://www.sec.gov/")
+    [h] = _source().headlines("KOD", since=KOD_SINCE, until=KOD_UNTIL)
+    assert not any_document.called
+    assert METADATA_ONLY in h.summary
+
+
+def test_a_replay_missing_the_exhibit_request_fails_instead_of_dropping_the_exhibit():
+    # As with the document names: live, a failed exhibit read is survivable; in replay, a missing recording means the
+    # cassette no longer matches the code, so it must fail loudly.
+    import json
+    from nasdaq_agent.sources.errors import CassetteMiss
+    from nasdaq_agent.sources.http import HttpClient, request_key
+    from nasdaq_agent.sources.sec import SecFilingsNewsSource
+
+    class ReplayCassette:
+        mode = "replay"
+        def __init__(self, entries): self._entries = entries
+        def lookup(self, key): return self._entries.get(key)
+        def store(self, key, status, text): raise AssertionError("replay never records")
+        def store_failure(self, key, error): raise AssertionError("replay never records")
+
+    cassette = ReplayCassette({
+        request_key("GET", SEARCH_URL, {"keysTyped": "KOD"}): (200, json.dumps(KOD_COMPANY_SEARCH)),
+        request_key("GET", KOD_SUBMISSIONS_URL, None): (200, json.dumps(KOD_FILING_LIST)),
+        request_key("GET", SEARCH_URL, KOD_DOCUMENTS_PARAMS): (200, json.dumps(KOD_DOCUMENTS))})
+    with pytest.raises(CassetteMiss):
+        SecFilingsNewsSource(HttpClient(1, 1, cassette=cassette)).headlines("KOD", since=KOD_SINCE, until=KOD_UNTIL)
+
+
 @respx.mock
 def test_the_registry_adds_the_sec_source_only_with_a_user_agent_and_declares_it(monkeypatch):
     from pydantic import SecretStr

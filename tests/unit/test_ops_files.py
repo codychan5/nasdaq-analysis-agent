@@ -7,7 +7,7 @@ regressions (e.g. a security option landing under the wrong service) that a subs
 match would miss. Dockerfile/.dockerignore/cron.example are plain text, so those are
 checked by substring.
 
-Security posture under test (see task-25 controller rulings):
+Security posture under test:
   - no Docker socket is mounted anywhere in the compose file (root-equivalent host access)
   - the sandbox-image service is gone; the agent's own container is the sandbox boundary,
     running the model-written analysis code via the subprocess backend
@@ -214,7 +214,7 @@ def test_cron_example_runs_weekdays_via_the_agent_cli():
     assert "nasdaq-agent run" in cron
 
 
-# --- Tasks 22+23 fix round 1: one pinned environment for record, replay, CI and the images ---------------------
+# --- One pinned environment for record, replay, CI and the images ----------------------------------------------
 
 
 def _constraints() -> dict[str, str]:

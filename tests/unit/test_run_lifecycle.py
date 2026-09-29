@@ -1,8 +1,8 @@
-"""Fix round 1, item 5: run_once/resume_run lifecycle tests. All offline -- no network, no real
+"""run_once/resume_run lifecycle tests. All offline -- no network, no real
 model. The orchestrator model is always tests/fake_model.py's scripted([...]) (or a model that
 raises if it's ever touched); deps come from a fakes-backed deps_factory using a real, local-disk
 FileTransport. Sqlite connections opened by graph.py are recorded via a wrapper around
-nasdaq_agent.agent.graph.sqlite3.connect, and "closed" is verified the way the task plan specifies:
+nasdaq_agent.agent.graph.sqlite3.connect, and "closed" is verified by using the connection:
 conn.execute("select 1") raises sqlite3.ProgrammingError once closed.
 """
 import json
@@ -64,7 +64,7 @@ def _is_closed(conn: sqlite3.Connection) -> bool:
         return True
 
 
-# Task 23 correction h: resume_run accepts only new_run_id's format (and only a run whose context.json exists), so
+# resume_run accepts only new_run_id's format (and only a run whose context.json exists), so
 # the hand-made runs resumed below use well-formed ids.
 ALREADY_SENT_RUN_ID = "20260924T220000Z-0a0001"
 CRASH_WINDOW_RUN_ID = "20260924T220000Z-0a0002"
@@ -85,7 +85,7 @@ class _ExplodingModel:
         raise AssertionError("model must not be used: the run was already resolved")
 
 
-# --- Item 1 -----------------------------------------------------------------------------------
+# --- A run that ends without a report sends one failure notice --------------------------------
 
 def test_run_once_model_ends_without_tools_sends_one_failure_notice(tmp_path, monkeypatch):
     settings = _settings(tmp_path, monkeypatch)
@@ -104,7 +104,23 @@ def test_run_once_model_ends_without_tools_sends_one_failure_notice(tmp_path, mo
     assert connections and all(_is_closed(c) for c in connections)
 
 
-# --- Item 2 -----------------------------------------------------------------------------------
+def test_a_run_whose_replies_are_cut_off_at_the_output_limit_names_the_limit_in_the_failure_notice(tmp_path, monkeypatch):
+    """A live run ended after three replies cut off at the output limit, and its failure notice said only that the agent
+    ended without sending a report. Through a whole run, the notice now names the limit and the setting to raise."""
+    settings = _settings(tmp_path, monkeypatch)
+    from nasdaq_agent.agent.graph import run_once
+    from nasdaq_agent.agent.middleware import MAX_NUDGES
+    model = scripted([AIMessage(content="", response_metadata={"finish_reason": "length"}) for _ in range(MAX_NUDGES + 1)])
+
+    outcome = run_once(settings, model=model, deps_factory=_fake_deps_factory)
+
+    assert outcome.exit_code == 1
+    body = _notice_body(Path(outcome.artifacts_path))
+    assert f"Reason: the model's replies reached the output limit before calling a tool, {MAX_NUDGES + 1} times" in body
+    assert "AGENT_LLM_MAX_OUTPUT_TOKENS" in body
+
+
+# --- Resuming a run whose report was already sent ---------------------------------------------
 
 def test_resume_run_already_sent_never_calls_model(tmp_path, monkeypatch):
     settings = _settings(tmp_path, monkeypatch)
@@ -128,7 +144,7 @@ def test_resume_run_already_sent_never_calls_model(tmp_path, monkeypatch):
     assert connections == []
 
 
-# --- Item 3 -----------------------------------------------------------------------------------
+# --- A resume reconciles delivery from the send marker ----------------------------------------
 
 def test_resume_run_reconciles_sent_marker_without_reentering_agent_loop(tmp_path, monkeypatch):
     settings = _settings(tmp_path, monkeypatch)
@@ -163,7 +179,7 @@ def test_resume_run_reconciles_sent_marker_without_reentering_agent_loop(tmp_pat
     assert connections == []
 
 
-# --- Item 5 -----------------------------------------------------------------------------------
+# --- A setup failure sends a notice instead of raising ----------------------------------------
 
 def test_run_once_setup_failure_sends_notice_without_raising(tmp_path, monkeypatch):
     settings = _settings(tmp_path, monkeypatch)
@@ -188,7 +204,32 @@ def test_run_once_setup_failure_sends_notice_without_raising(tmp_path, monkeypat
     assert connections == []
 
 
-# --- Item 6 -----------------------------------------------------------------------------------
+class _UntouchableModel:
+    def __getattr__(self, name):
+        raise AssertionError(f"the model was touched ({name}) although setup had failed")
+
+
+def test_run_once_without_docker_stops_at_setup_and_the_notice_says_how_to_fix_it(tmp_path, monkeypatch):
+    """Without Docker, auto refuses before any model call, and the failure notice names both ways forward, within the
+    length a notice keeps."""
+    settings = _settings(tmp_path, monkeypatch)
+    from nasdaq_agent.agent import graph
+    from nasdaq_agent.sandbox import runner as sandbox_runner
+    from nasdaq_agent.universe import Universe
+    from tests.unit.test_universe import SAMPLE
+    monkeypatch.setattr(sandbox_runner, "docker_available", lambda: False)
+    monkeypatch.setattr(graph, "load_universe", lambda fetch, cache: Universe.from_text(SAMPLE))
+    outcome = graph.run_once(settings, model=_UntouchableModel())
+    assert outcome.exit_code == 1
+    (notice,) = (Path(outcome.artifacts_path) / "outbox").glob("*.eml")
+    import email
+    from email import policy
+    text = email.message_from_bytes(notice.read_bytes(), policy=policy.default).get_body(("plain",)).get_content()
+    assert "setup failed" in text and "docker build" in text and "AGENT_SANDBOX_BACKEND=subprocess" in text
+    assert "does not isolate it." in text and ".." not in text  # the whole message survives the notice's length cap
+
+
+# --- A failure to build the orchestrator still closes the connection --------------------------
 
 def test_run_once_orchestrator_construction_failure_closes_connection(tmp_path, monkeypatch):
     settings = _settings(tmp_path, monkeypatch)
@@ -211,12 +252,12 @@ def test_run_once_orchestrator_construction_failure_closes_connection(tmp_path, 
     assert connections and all(_is_closed(c) for c in connections)
 
 
-# --- Fix round 2, item 1: an outcome recorded during THIS invocation, not summary.json ---------
+# --- An outcome recorded during THIS invocation, not summary.json ------------------------------
 
 def test_stale_summary_json_never_misreports_a_report_delivered_this_invocation(tmp_path, monkeypatch):
-    """Fix round 2, item 1(a): _handle_graph_invoke_failure must never read summary.json, because
+    """_handle_graph_invoke_failure must never read summary.json, because
     on a resume, summary.json from an EARLIER invocation of the same run already exists. Simulates
-    the task plan's failing sequence directly: a stale summary.json (exit_code 1) already exists; THIS
+    the failing sequence directly: a stale summary.json (exit_code 1) already exists; THIS
     invocation's agent step marks the report sent; graph.invoke then raises before finalize_node
     can record anything in the outcome holder. The fallback (recorded as "run failed", which calls
     finalize_with) must still land on the correct, CURRENT outcome -- 0, no notice, summary.json
@@ -232,7 +273,7 @@ def test_stale_summary_json_never_misreports_a_report_delivered_this_invocation(
 
     run_id = STALE_SUMMARY_RUN_ID
     seed_run_dir = RunDir(tmp_path / "runs", run_id)
-    RunContext.new(run_id, "h", str(seed_run_dir.path)).save()  # correction h: only an existing run can be resumed
+    RunContext.new(run_id, "h", str(seed_run_dir.path)).save()  # only an existing run can be resumed
     seed_run_dir.write_json("summary.json", {"run_id": run_id, "exit_code": 1, "sent": False, "gainer": None,
                                              "degradations": [], "errors": [], "tool_calls": 0, "give_up_reason": None})
 
@@ -262,9 +303,9 @@ def test_stale_summary_json_never_misreports_a_report_delivered_this_invocation(
 
 
 def test_graph_invoke_failure_after_finalize_returns_the_recorded_exit_code(tmp_path, monkeypatch):
-    """Fix round 2, item 1(b): once finalize_node has recorded an exit code in the outcome holder,
+    """Once finalize_node has recorded an exit code in the outcome holder,
     a LATER graph.invoke failure -- here, the checkpoint write for finalize's own step-completion,
-    simulating the shape of the round-1 failure mode without needing a broken package -- must
+    the way a mismatched checkpoint package once failed, simulated without a broken package -- must
     return that recorded code directly, and must never fall through to the "run failed" fallback
     (which would call finalize_with a redundant second time; asserted directly by counting calls
     to graph_module.finalize_with, which run_once reaches only through its failure paths).
@@ -318,10 +359,10 @@ def test_graph_invoke_failure_after_finalize_returns_the_recorded_exit_code(tmp_
     assert connections and all(_is_closed(c) for c in connections)
 
 
-# --- Fix round 2, item 2: checkpoints genuinely persist -----------------------------------------
+# --- Checkpoints genuinely persist --------------------------------------------------------------
 
 def test_checkpoints_persist_for_both_the_outer_graph_and_the_orchestrator_threads(tmp_path, monkeypatch):
-    """Fix round 2, item 2: after a real run_once, open a FRESH sqlite connection to the run's
+    """After a real run_once, open a FRESH sqlite connection to the run's
     checkpoints.sqlite (not the one graph.py itself used -- proving the data is genuinely durable
     on disk, not merely visible through the same in-process connection/object), build a
     SqliteSaver on it, and list checkpoints for both threads a run touches: the outer graph's
@@ -347,7 +388,7 @@ def test_checkpoints_persist_for_both_the_outer_graph_and_the_orchestrator_threa
     assert len(orchestrator_checkpoints) >= 1
 
 
-# --- Fix round 2, item 3: resume from the checkpoint after a simulated crash --------------------
+# --- Resume from the checkpoint after a simulated crash -----------------------------------------
 
 class _KilledByCrash(BaseException):
     """Simulates an external kill signal (SystemExit/KeyboardInterrupt-like): deliberately a
@@ -364,7 +405,7 @@ class _CrashesOnWideWindowOnly:
     (_two_closes, reconciling a candidate's reported pct_change against real close-to-close bars,
     for a narrow 1-3 day window), and a source that crashed unconditionally would crash there
     first instead, before get_price_history is ever reached. Isolating the simulated crash to the
-    wide query is what actually reproduces the spec's scenario: resolve_session and
+    wide query is what actually reproduces the scenario under test: resolve_session and
     find_top_gainer complete normally, and it is specifically get_price_history's tool call that
     is killed mid-execution.
     """
@@ -420,7 +461,7 @@ def _working_deps_factory(settings, ctx, run_dir, clock, cassette=None):
 
 
 def test_resume_continues_the_checkpoint_after_a_simulated_crash(tmp_path, monkeypatch):
-    """Fix round 2, item 3 (spec section 11): a simulated crash mid-tool-call, then a resume that
+    """A simulated crash mid-tool-call, then a resume that
     continues from the checkpoint rather than restarting the conversation from "init". Exactly one
     email must ever be sent (and no failure notice), resolve_session/find_top_gainer must each
     show up exactly once in tool_log.jsonl (never replayed on resume), and get_price_history must
@@ -472,7 +513,7 @@ def test_resume_continues_the_checkpoint_after_a_simulated_crash(tmp_path, monke
     assert len(successful_history_calls) == 1
 
 
-# --- Final fix wave, part A ------------------------------------------------------------------------------------------
+# --- Call caps, the run deadline, resume after a kill and the "run failed" label -------------------------------------
 
 def _only_run_id(tmp_path) -> str:
     """run_once mints its own run id; recover it from the one run directory a test created."""
@@ -516,7 +557,7 @@ def _budget_deps_factory(gainer_source_factory):
 
 
 def test_a_resume_shares_the_runs_model_call_budget(tmp_path, monkeypatch):
-    """Final fix wave A1: the caps are per run (spec section 10), so they are thread limits on the orchestrator's
+    """The caps are per run, so they are thread limits on the orchestrator's
     thread, whose id is the run id; a run limit would reset on every resume. With max_model_calls=3, the first
     invocation spends 2 model calls and is killed mid-tool-call. The resume re-runs the pending find_top_gainer call,
     gets exactly 1 more model call, and the loop then ends at the cap."""
@@ -548,7 +589,7 @@ def test_a_resume_shares_the_runs_model_call_budget(tmp_path, monkeypatch):
 
 
 def test_a_resume_shares_the_runs_tool_call_budget(tmp_path, monkeypatch):
-    """Final fix wave A1, the tool-call cap: ToolCallLimitMiddleware counts the tool calls a model turn proposes. With
+    """The tool-call cap is per run too: ToolCallLimitMiddleware counts the tool calls a model turn proposes. With
     max_tool_calls=3, the first invocation proposes 2 and is killed while running the second. The resume re-runs that
     pending call without counting it again, allows get_price_history (the 3rd), and ends the loop instead of running
     get_news (the 4th)."""
@@ -578,7 +619,7 @@ def test_a_resume_shares_the_runs_tool_call_budget(tmp_path, monkeypatch):
 
 
 def test_a_run_past_its_deadline_ends_before_the_first_model_call(tmp_path, monkeypatch):
-    """Final fix wave A2: the deadline is checked before each model call. Here it has already passed at the first
+    """The run deadline is checked before each model call. Here it has already passed at the first
     check, so the model is never called; the run exits 1 and the failure notice names the deadline. Only the
     middleware module's `time` is replaced (built at 0 s, checked at 10,000 s), never the process-wide clock."""
     import time
@@ -602,7 +643,7 @@ def test_a_run_past_its_deadline_ends_before_the_first_model_call(tmp_path, monk
 
 
 def test_agent_node_detects_a_pending_orchestrator_task_by_tasks_not_next():
-    """Final fix wave A4: StateSnapshot.next leaves out a task whose writes were saved before a kill, so the
+    """StateSnapshot.next leaves out a task whose writes were saved before a kill, so the
     orchestrator thread's pending work is read from .tasks. A thread with a pending task is continued with
     invoke(None); a finished thread gets the kickoff; a fake without get_state counts as finished."""
     from types import SimpleNamespace
@@ -661,7 +702,7 @@ def _run_killed_inside_finalize(settings, tmp_path) -> str:
 
 
 def test_resume_after_a_kill_inside_finalize_runs_only_finalize(tmp_path, monkeypatch):
-    """Final fix wave A8: the outer graph stopped in "finalize", so resume_run continues it with invoke(None) and only
+    """The outer graph stopped in "finalize", so resume_run continues it with invoke(None) and only
     finalize runs. The model is never called -- restarting from "init" would re-enter the agent loop, which gives the
     finished orchestrator thread a new kickoff and calls the model -- and no second notice is sent: the failure
     marker from the killed attempt is still "sending", so that notice's outcome is unknown."""
@@ -702,8 +743,8 @@ class _NextHidesPendingTasks:
 
 
 def test_resume_detects_the_outer_graphs_pending_work_by_tasks_not_next(tmp_path, monkeypatch):
-    """Final fix wave A4, the outer graph in resume_run: with .next empty but a task still pending, resume_run must
-    continue with invoke(None) -- here, finalize alone -- and never restart the agent loop."""
+    """resume_run also reads the outer graph's pending work from .tasks: with .next empty but a task still pending,
+    it must continue with invoke(None) -- here, finalize alone -- and never restart the agent loop."""
     settings = _settings(tmp_path, monkeypatch)
     from nasdaq_agent.agent import graph as graph_module
     run_id = _run_killed_inside_finalize(settings, tmp_path)
@@ -724,7 +765,7 @@ def test_resume_detects_the_outer_graphs_pending_work_by_tasks_not_next(tmp_path
 
 
 def test_a_graph_invoke_failure_before_finalize_is_labelled_run_failed(tmp_path, monkeypatch):
-    """Final fix wave A7: setup succeeded, so a graph.invoke failure before finalize recorded an exit code is a run
+    """Setup succeeded, so a graph.invoke failure before finalize recorded an exit code is a run
     failure, not a setup failure, in the notice and in summary.json."""
     settings = _settings(tmp_path, monkeypatch)
     from nasdaq_agent.agent import graph as graph_module

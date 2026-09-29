@@ -7,9 +7,8 @@ from ..context import RunContext, SentimentInfo
 from .common import Deps, err, ok, precondition, record_call
 
 PROVIDER_SIGN = {"positive": 1, "negative": -1, "neutral": 0}
-# Review fix (Important): a label must agree with its own score, not just be any of the three
-# literals. Neutral gets a tolerance band rather than requiring exactly 0.0, since the model
-# is scoring subjective tone, not reporting a computed value.
+# A label must agree with its own score, not just be any of the three literals. Neutral gets a tolerance band rather
+# than requiring exactly 0.0, since the model is scoring subjective tone, not reporting a computed value.
 NEUTRAL_SCORE_BOUND = 0.25
 LABEL_CONSISTENT_WITH_SCORE = {
     "positive": lambda score: score > 0,
@@ -31,9 +30,8 @@ def make_record_sentiment(ctx: RunContext, deps: Deps):
         """Record your sentiment assessment of the fetched headlines: an overall score in [-1, 1], a label,
         a one-sentence rationale, and a score per headline id. Judge only from the headline text. label must
         agree with score: positive needs score > 0, negative needs score < 0, neutral needs abs(score) <= 0.25."""
-        # Amendment: every return path below funnels through _record, so tool_log.jsonl gets
-        # exactly one entry per call whatever the outcome, including the score-range and
-        # unknown-headline-id refusals that used to return early without recording.
+        # Every return path below funnels through _record, so tool_log.jsonl gets exactly one entry per call whatever
+        # the outcome, including the refusals that return early, such as a score out of range or an unknown headline id.
         def _record(outcome: str) -> str:
             record_call(ctx, deps, "record_sentiment", {"score": score, "label": label}, outcome)
             return outcome
@@ -48,8 +46,8 @@ def make_record_sentiment(ctx: RunContext, deps: Deps):
                                "continue with compose_report"))
         if not -1.0 <= score <= 1.0:
             return _record(err("score must be between -1 and 1"))
-        # Review fix (Important): reject a label that contradicts its own score (e.g. "positive"
-        # with score -0.4) instead of trusting the model's label and score to agree.
+        # Reject a label that contradicts its own score (e.g. "positive" with score -0.4) instead of trusting the
+        # model's label and score to agree.
         if not LABEL_CONSISTENT_WITH_SCORE[label](score):
             return _record(err(f"label '{label}' is inconsistent with score {score}: positive requires score > 0, "
                                f"negative requires score < 0, neutral requires abs(score) <= {NEUTRAL_SCORE_BOUND}"))

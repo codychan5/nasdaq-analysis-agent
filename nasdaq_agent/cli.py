@@ -1,16 +1,16 @@
-"""The nasdaq-agent command line (Task 23): run, resume, record and replay, and schedule, which runs the agent on the
+"""The nasdaq-agent command line: run, resume, record and replay, and schedule, which runs the agent on the
 AGENT_SCHEDULE_CRON schedule until stopped and prints one JSON line per trigger.
 
 Each command prints one JSON line, {"run_id", "exit_code", "artifacts_path"}, and exits with the run's exit code: 0
 clean, 2 degraded, 1 failed. A failure after the run's context exists comes back from run_once or resume_run as that
 ordinary outcome. A failure before it exists (invalid settings, an invalid or unknown run id, a run directory that
-cannot be created) prints one line to stderr and exits 1 -- never a traceback, which could carry settings
-(correction d). So does a usage error, through main(), the console entry point (fix round 1, K8).
+cannot be created) prints one line to stderr and exits 1 -- never a traceback, which could carry settings. So does a
+usage error, through main(), the console entry point.
 """
 import json
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Callable, NoReturn, Sequence
 
@@ -22,6 +22,7 @@ from typer.exceptions import TyperException
 from .agent.finalize import EXIT_FAILED
 from .agent.graph import RunOutcome, resume_run, run_once
 from .artifacts import redact
+from .calendar import CalendarError, clock_for_session_date
 from .config import Mode, Settings, load_settings
 from .replay.llm_cache import recorded_exit_code
 from .scheduler import run_on_schedule
@@ -47,7 +48,7 @@ class CliError(Exception):
 
 
 def _invalid_setting_names(error: ValidationError) -> list[str]:
-    """Correction d: the names of the invalid settings, never their values -- a secret pasted into the wrong
+    """The names of the invalid settings, never their values -- a secret pasted into the wrong
     variable must not be printed back."""
     names: set[str] = set()
     for detail in error.errors(include_url=False, include_context=False, include_input=False):
@@ -85,6 +86,23 @@ def _parse_now(now: str | None) -> datetime | None:
     return parsed
 
 
+def _wall_clock() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _pinned_clock(now: datetime | None, settings: Settings) -> datetime | None:
+    """The run's clock: --now, or 16:30 New York time on AGENT_SESSION_DATE, or None for the real clock. Both at once
+    is refused, as is a session date without a completed session."""
+    if settings.session_date is None:
+        return now
+    if now is not None:
+        raise CliError("set either --now or AGENT_SESSION_DATE, not both")
+    try:
+        return clock_for_session_date(settings.session_date, _wall_clock())
+    except CalendarError as e:
+        raise CliError(f"AGENT_SESSION_DATE: {e}") from None
+
+
 def _error_line(message: str) -> None:
     typer.echo(f"{ERROR_PREFIX} {' '.join(message.split())}", err=True)
 
@@ -95,11 +113,17 @@ def _fail(message: str) -> NoReturn:
 
 
 def _start(start: Callable[[Settings, datetime | None], RunOutcome], env_file: Path | None, mode: Mode | None,
-           now: str | None = None) -> tuple[Settings, RunOutcome]:
+           now: str | None = None, pin: bool = True) -> tuple[Settings, RunOutcome]:
+    """pin=False for replay, whose clock is always the recording's."""
     settings: Settings | None = None
     try:
         when = _parse_now(now)
         settings = _load_settings(env_file, mode)
+        if pin:
+            when = _pinned_clock(when, settings)
+        elif settings.session_date is not None:
+            typer.echo(f"note: replay reports the recording's own session; AGENT_SESSION_DATE "
+                       f"({settings.session_date}) is not used", err=True)
         return settings, start(settings, when)
     except CliError as e:
         _fail(str(e))
@@ -127,8 +151,8 @@ def run(now: NowOption = None, env_file: EnvFileOption = None) -> None:
 
 @app.command()
 def resume(run_id: RunIdOption, env_file: EnvFileOption = None) -> None:
-    """Resume an interrupted run from its checkpoint."""
-    _run_command(lambda settings, _: resume_run(settings, run_id), env_file, None)
+    """Resume an interrupted run from its checkpoint. A run for AGENT_SESSION_DATE resumes on the same pinned clock."""
+    _run_command(lambda settings, when: resume_run(settings, run_id, now=when), env_file, None)
 
 
 @app.command()
@@ -140,10 +164,10 @@ def record(now: NowOption = None, env_file: EnvFileOption = None) -> None:
 @app.command()
 def replay(check: CheckOption = False, env_file: EnvFileOption = None) -> None:
     """Run the recorded cassette through the real graph, with no keys and no network."""
-    settings, outcome = _start(lambda settings, _: run_once(settings), env_file, Mode.replay)
+    settings, outcome = _start(lambda settings, _: run_once(settings), env_file, Mode.replay, pin=False)
     if not check:
         _emit(outcome)
-    # Fix round 1, K6: CI's replay step. A degraded recording (exit 2) replays as 2, and that is a pass here.
+    # CI's replay step runs replay --check. A degraded recording (exit 2) replays as 2, and that is a pass here.
     recorded = recorded_exit_code(settings.cassette_dir)
     matched = recorded == outcome.exit_code
     _emit(outcome, {"recorded_exit_code": recorded, "check": "match" if matched else "mismatch"},
@@ -160,6 +184,9 @@ def schedule(env_file: EnvFileOption = None) -> None:
         _fail(str(e))
     if settings.mode is not Mode.live:
         _fail(f"schedule runs the agent live; AGENT_MODE is {settings.mode.value}")
+    if settings.session_date is not None:
+        _fail(f"schedule reports each new session; AGENT_SESSION_DATE ({settings.session_date}) pins one day, so "
+              "leave it empty to run on a schedule")
     try:
         run_on_schedule(settings, lambda s: run_once(s), report=lambda line: typer.echo(json.dumps(line)))
     except KeyboardInterrupt:
@@ -169,7 +196,7 @@ def schedule(env_file: EnvFileOption = None) -> None:
 def main(argv: Sequence[str] | None = None) -> NoReturn:
     """The console entry point ([project.scripts] in pyproject.toml). Runs the app without click's standalone
     handling, so a usage error -- a missing --run-id, an unknown command, no command at all -- is one clean line and
-    exit 1 (fix round 1, K8): click's own exit 2 would read as a degraded run."""
+    exit 1: click's own exit 2 would read as a degraded run."""
     command = typer.main.get_command(app)
     try:
         code = command.main(args=list(argv) if argv is not None else None, prog_name=PROG_NAME, standalone_mode=False)

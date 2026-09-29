@@ -19,7 +19,7 @@ MANIFEST = "manifest.json"
 LLM_DIR = "llm"
 FINGERPRINT_CHARS = 16
 # A record run is sealed only after exit 0 (clean) or 2 (degraded), so those are the only exit codes a genuine
-# manifest can hold (fix round 2, item 4).
+# manifest can hold.
 SEALABLE_EXIT_CODES = frozenset({0, 2})
 # The only message type a chat model's generation holds. Anything else in a cassette is refused, not rebuilt.
 AI_MESSAGE_TYPE = "ai"
@@ -55,8 +55,9 @@ def _require_aware_iso(now_iso: Any) -> str:
 def write_manifest(root: Path, now_iso: str, keyed_sources: Iterable[str] = (), environment: dict[str, Any] | None = None,
                    exit_code: int | None = None) -> None:
     """keyed_sources names the key-gated data sources the recording used, so replay can rebuild the same chain with
-    no keys (graph._replay_settings). Fix round 1: environment is the recording environment (replay compares it,
-    Important 2; this process's own when not given) and exit_code the recorded run's (replay --check, K6)."""
+    no keys (graph._replay_settings). environment is the recording environment, this process's own when not given;
+    replay compares it with the environment it runs in. exit_code is the recorded run's, which replay --check
+    compares with the replayed run's."""
     if exit_code is not None and (not isinstance(exit_code, int) or isinstance(exit_code, bool)):
         raise ValueError(f"the recorded exit code must be an integer, got {exit_code!r}")
     data = {"fingerprint": prompt_fingerprint(), "now": _require_aware_iso(now_iso), "keyed_sources": sorted(keyed_sources),
@@ -88,10 +89,10 @@ def check_manifest(root: Path) -> dict[str, Any]:
 
 
 def recorded_exit_code(root: Path) -> int | None:
-    """The exit code the recorded run ended with (K6), or None when there is no readable manifest or it records none.
+    """The exit code the recorded run ended with, or None when there is no readable manifest or it records none.
     Only 0 or 2 count: a manifest is written only after those, so anything else -- a hand-edited 1, say -- reads as
-    missing (fix round 2, item 4). Deliberately not check_manifest: replay --check reports the recorded code even when
-    the run itself failed on a stale or broken cassette."""
+    missing. Deliberately not check_manifest: replay --check reports the recorded code even when the run itself
+    failed on a stale or broken cassette."""
     path = Path(root) / MANIFEST
     try:
         data = json.loads(path.read_text())
@@ -103,7 +104,7 @@ def recorded_exit_code(root: Path) -> int | None:
 
 
 def _to_plain(generations: Sequence[Generation]) -> dict[str, Any]:
-    """Correction a: plain data only -- messages_to_dict for the message, plus the generation's text and info."""
+    """Plain data only -- messages_to_dict for the message, plus the generation's text and info."""
     entries = []
     for generation in generations:
         entry: dict[str, Any] = {"text": generation.text, "generation_info": generation.generation_info}
@@ -115,7 +116,7 @@ def _to_plain(generations: Sequence[Generation]) -> dict[str, Any]:
 
 def _from_plain(payload: Any, path: Path) -> list[Generation]:
     """Rebuilds generations with messages_from_dict, which maps a closed set of message type names to their classes.
-    Correction a: never langchain_core.load on cassette content -- a committed file is input, and generic
+    Never langchain_core.load on cassette content -- a committed file is input, and generic
     deserialization of it is the serialization-injection class behind CVE-2025-68664."""
     malformed = CassetteMiss(f"cassette entry {path} is malformed; run `nasdaq-agent record` again")
     entries = payload.get("generations") if isinstance(payload, dict) else None

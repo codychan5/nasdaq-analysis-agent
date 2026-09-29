@@ -1,10 +1,10 @@
 import logging
 from datetime import date, datetime
-from typing import Callable
+from typing import Any, Callable
 
-from ..universe import Universe
+from ..universe import SessionUniverse, Universe
 from .errors import SourceError, SourceNoData
-from .models import Bar, BarSeries, Candidate, CorporateAction, Headline, clean_summary
+from .models import Bar, BarSeries, Candidate, CorporateAction, Headline, clean_summary, rank_candidates
 
 NASDAQ_EXCHANGE_CODES = ["NMS", "NGM", "NCM"]
 SCREENER_PAGE_SIZE = 100
@@ -26,7 +26,7 @@ class YahooScreenerGainerSource:
     name = "yahoo"
     requires_market_closed = True  # a live screener shows the current session while the market is open
 
-    def __init__(self, universe: Universe, screen_fn: Callable = _default_screen):
+    def __init__(self, universe: SessionUniverse, screen_fn: Callable = _default_screen):
         self._universe, self._screen = universe, screen_fn
 
     def top_candidates(self, session_date: date, prev_session_date: date, limit: int) -> list[Candidate]:
@@ -35,22 +35,21 @@ class YahooScreenerGainerSource:
         quotes = (data or {}).get("quotes") or []
         if not quotes:
             raise SourceError("yahoo: screener returned no quotes")
+        listing = self._universe.for_session(session_date)
         out: list[Candidate] = []
         skipped = 0
         for q in quotes:
             try:
-                symbol = self._universe.to_canonical(q["symbol"], "yahoo")
-                if not self._universe.is_common_stock(symbol):
-                    continue
+                symbol = listing.to_canonical(q["symbol"], "yahoo")
                 out.append(Candidate(symbol=symbol, name=q.get("shortName"), prev_close=q.get("regularMarketPreviousClose"),
                                      close=float(q["regularMarketPrice"]), pct_change=float(q["regularMarketChangePercent"]),
-                                     volume=q.get("regularMarketVolume"), market_cap=q.get("marketCap"), source=self.name))
+                                     volume=q.get("regularMarketVolume"), market_cap=q.get("marketCap"), source=self.name,
+                                     excluded=listing.exclusion(symbol)))
             except (KeyError, ValueError, TypeError):
                 skipped += 1
         if skipped:
             log.warning("%s: skipped %d malformed gainer row(s)", self.name, skipped)
-        out.sort(key=lambda c: c.pct_change, reverse=True)
-        return out[:limit]
+        return rank_candidates(out, limit)
 
 
 NEWS_LIMIT = 10
@@ -66,13 +65,20 @@ class YfinanceHistorySource:
 
     def __init__(self, universe: Universe, ticker_factory: Callable = _default_ticker):
         self._universe, self._ticker = universe, ticker_factory
+        # One download per window for the life of this source, which is one run: find_top_gainer and the price check
+        # ask for a window's bars and then its splits, and each call used to download the same history again. A failed
+        # download raises before anything is kept.
+        self._frames: dict[tuple[str, date, date], Any] = {}
 
     def _frame(self, symbol: str, start: date, end: date):
         provider_symbol = self._universe.to_provider(symbol, "yahoo")
-        # yfinance treats `end` as exclusive, so ask for one day more.
-        from datetime import timedelta
-        return self._ticker(provider_symbol).history(start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
-                                                     auto_adjust=False, actions=True)
+        key = (provider_symbol, start, end)
+        if key not in self._frames:
+            # yfinance treats `end` as exclusive, so ask for one day more.
+            from datetime import timedelta
+            self._frames[key] = self._ticker(provider_symbol).history(
+                start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(), auto_adjust=False, actions=True)
+        return self._frames[key]
 
     def bars(self, symbol: str, start: date, end: date) -> BarSeries:
         df = self._frame(symbol, start, end)

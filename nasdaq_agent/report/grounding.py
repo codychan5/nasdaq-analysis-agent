@@ -13,7 +13,7 @@ times and month-and-day dates are not quantities (TIME_PATTERN, MONTH_DAY_PATTER
 underscore anywhere in the prose is a finding: it means a metric name leaked into text meant for
 readers (PLAIN_WORDS).
 
-Review fix (Critical), full redesign of year and number-word handling. The previous approach
+Year and number-word handling was fully redesigned. The previous approach
 stripped year-shaped substrings out of the text with a regex .sub() before tokenizing numbers,
 which corrupted numbers a year merely happened to be a substring of (e.g. "1950.2%" had "1950"
 cut out, leaving the stray, unchecked token "2"), and only recognised a handful of unit words,
@@ -25,22 +25,22 @@ classified in place from its own shape and immediate context. A year is exempt o
 caller explicitly says which years are in play (`exempt_years`) -- there is no default "any
 19xx/20xx looks like a year" behaviour any more.
 
-Fix round 3: a hyphen directly after a letter or digit is a word-joiner, not a minus sign
+A hyphen directly after a letter or digit is a word-joiner, not a minus sign
 (NUMBER_PATTERN); the "a " gap before a unit only ever applies after a number word, never after
 a numeric token (UNIT_AFTER_NUMBER_PATTERN vs UNIT_AFTER_WORD_PATTERN); U+2010/U+2011 hyphen
 look-alikes are normalised to "-" and multi-word units accept a hyphen or whitespace between
 their words (UNIT_SOURCE); and proper-noun labels that are not quantities (index names, trial
 phases) are removed before tokenizing, the same way dates and citations are (PROPER_NOUN_PATTERN).
 
-Fix round 4: a label is removed only when it stands alone -- never when a decimal point or a
+A label is removed only when it stands alone -- never when a decimal point or a
 thousands comma continues its number, when a unit follows it, or when it starts right after a
-digit and a decimal point -- and the label list gains quarter and half labels, SEC form names,
+digit and a decimal point -- and the label list also has quarter and half labels, SEC form names,
 more index names and more trial-phase spellings (PROPER_NOUN_PATTERN); the "a" gap before a unit
 needs a separator after the "a" (UNIT_AFTER_WORD_PATTERN); the text is NFKC-normalised, every
 dash look-alike becomes "-" and invisible characters are deleted before tokenizing (_preprocess);
 and a hyphen after any Unicode letter or digit is a hyphen, not a minus sign (NUMBER_PATTERN).
 
-Fix round 5: a figure, en or em dash with whitespace on both sides is an aside and becomes ";"
+A figure, en or em dash with whitespace on both sides is an aside and becomes ";"
 (SPACED_DASH_ASIDE_PATTERN); "Form" in the "Form 4" label is case-sensitive (LABEL_SOURCE); the
 words of a multi-word unit may touch (UNIT_SOURCE); a removed label becomes "_", so a hyphen after
 it is still a hyphen; ISO-date removal has stand-alone guards like the label pattern
@@ -55,49 +55,48 @@ from ..metrics import METRIC_NAMES, PCT_TOLERANCE, RETURNS_PER_WINDOW, AnalysisR
 from ..sources.models import Headline, first_published, recency_key
 from .schemas import GroundingResult, HeadlineNote, Narrative
 
-# Fix round 5, item 6: an ISO date is removed only when it stands alone, like a label (see
-# PROPER_NOUN_PATTERN below). It must not start right after a digit and a decimal point or comma,
-# where its digits would continue a number: "1.2026-10-15", or "11,0002-09-24", where ",000" is
-# the thousands group of "11,000". Unlike a label, a date starts with four digits, so the comma
-# guard is needed here. It must not be continued by a decimal point or comma and a digit
-# ("2026-10-15.5%"), and must not be followed by a percent sign ("2026-10-15%"). Only "%" is
-# checked after a date, not every unit, so "the 2026-09-24 dollar volume" still has its date
-# removed.
+# An ISO date is removed only when it stands alone, like a label (see PROPER_NOUN_PATTERN below).
+# It must not start right after a digit and a decimal point or comma, where its digits would
+# continue a number: "1.2026-10-15", or "11,0002-09-24", where ",000" is the thousands group of
+# "11,000". Unlike a label, a date starts with four digits, so the comma guard is needed here. It
+# must not be continued by a decimal point or comma and a digit ("2026-10-15.5%"), and must not
+# be followed by a percent sign ("2026-10-15%"). Only "%" is checked after a date, not every
+# unit, so "the 2026-09-24 dollar volume" still has its date removed.
 DATE_PATTERN = re.compile(r"(?<!\d\.)(?<!\d,)\b\d{4}-\d{2}-\d{2}\b(?![.,]\d)(?!\s*%)")
 CITATION_PATTERN = re.compile(r"\[\d+\]")
-# Fix round 5, item 1: a figure dash (U+2012), en dash (U+2013) or em dash (U+2014) with
-# whitespace on both sides sets off an aside ("approval in 2026 — points of contention remain"); it
-# does not join the words around it. Before the hyphen map below, it becomes ";", which is neither
-# whitespace nor a hyphen, so it can never join a number, a number word or a label to a unit after
-# it. A dash without whitespace on both sides, and every other hyphen look-alike, stays a hyphen.
+# A figure dash (U+2012), en dash (U+2013) or em dash (U+2014) with whitespace on both sides sets
+# off an aside ("approval in 2026 — points of contention remain"); it does not join the words
+# around it. Before the hyphen map below, it becomes ";", which is neither whitespace nor a
+# hyphen, so it can never join a number, a number word or a label to a unit after it. A dash
+# without whitespace on both sides, and every other hyphen look-alike, stays a hyphen.
 SPACED_DASH_ASIDE_PATTERN = re.compile(r"(?<=\s)[\u2012\u2013\u2014](?=\s)")
-# Fix round 3, item 3, extended in fix round 4, item 3: every dash that reads as a hyphen is
-# treated exactly like the ASCII hyphen, in unit spellings and in years alike: U+2010 HYPHEN,
-# U+2011 NON-BREAKING HYPHEN, U+2012 FIGURE DASH, U+2013 EN DASH, U+2014 EM DASH, U+FE63 SMALL
-# HYPHEN-MINUS and U+FF0D FULLWIDTH HYPHEN-MINUS. This runs after NFKC normalisation, which also
-# folds a few presentation forms (for example U+FE58 SMALL EM DASH) into characters listed here.
-# U+2212 (MINUS SIGN) is deliberately NOT included: unlike a hyphen, it is never a word-joiner,
-# so it keeps its own always-a-sign handling in NUMBER_PATTERN below.
+# Every dash that reads as a hyphen is treated exactly like the ASCII hyphen, in unit spellings
+# and in years alike: U+2010 HYPHEN, U+2011 NON-BREAKING HYPHEN, U+2012 FIGURE DASH, U+2013 EN
+# DASH, U+2014 EM DASH, U+FE63 SMALL HYPHEN-MINUS and U+FF0D FULLWIDTH HYPHEN-MINUS. This runs
+# after NFKC normalisation, which also folds a few presentation forms (for example U+FE58 SMALL
+# EM DASH) into characters listed here. U+2212 (MINUS SIGN) is deliberately NOT included: unlike
+# a hyphen, it is never a word-joiner, so it keeps its own always-a-sign handling in
+# NUMBER_PATTERN below.
 HYPHEN_LOOKALIKE_PATTERN = re.compile("[\u2010\u2011\u2012\u2013\u2014\ufe63\uff0d]")
-# Fix round 4, item 3: invisible characters are deleted before tokenizing, so that one inside a
-# number ("20<U+200B>26%") or between a number and its unit cannot split it into pieces that are
-# checked separately, or detach the unit so it is not checked at all: U+00AD SOFT HYPHEN, U+200B
-# ZERO WIDTH SPACE, U+200C ZERO WIDTH NON-JOINER, U+200D ZERO WIDTH JOINER, U+2060 WORD JOINER
-# and U+FEFF ZERO WIDTH NO-BREAK SPACE. NFKC leaves all six unchanged and never produces any of
-# them, so deleting them after normalising misses nothing.
+# Invisible characters are deleted before tokenizing, so that one inside a number
+# ("20<U+200B>26%") or between a number and its unit cannot split it into pieces that are checked
+# separately, or detach the unit so it is not checked at all: U+00AD SOFT HYPHEN, U+200B ZERO
+# WIDTH SPACE, U+200C ZERO WIDTH NON-JOINER, U+200D ZERO WIDTH JOINER, U+2060 WORD JOINER and
+# U+FEFF ZERO WIDTH NO-BREAK SPACE. NFKC leaves all six unchanged and never produces any of them,
+# so deleting them after normalising misses nothing.
 INVISIBLE_CHARACTER_PATTERN = re.compile("[\u00ad\u200b\u200c\u200d\u2060\ufeff]")
-# Fix round 3, item 1 (regression from round 2): a "-" immediately after a letter or digit is a
-# hyphen joining words together ("mid-2026", "2025-2026"), never a minus sign, so it must not be
-# consumed as part of the number that follows it -- otherwise "mid-2026" tokenizes as "-2026"
-# instead of the bare year "2026". A "-" anywhere else (after whitespace, an opening bracket, or
-# at the very start of the text) still keeps its sign ("fell -2.3%"). U+2212, the actual minus
-# sign character, is unconditionally a sign regardless of what precedes it -- a hyphen is never
-# typeset as U+2212, so there is no ambiguity to resolve for it. Fix round 4, item 4: "letter or
-# digit" means any Unicode word character (\w), not only ASCII, so "Nestlé-2026" and
-# "Société-2025" end in a hyphen, not in a signed year.
+# A "-" immediately after a letter or digit is a hyphen joining words together ("mid-2026",
+# "2025-2026"), never a minus sign, so it must not be consumed as part of the number that follows
+# it -- otherwise "mid-2026" tokenizes as "-2026" instead of the bare year "2026", as it did in
+# an earlier version. A "-" anywhere else (after whitespace, an opening bracket, or at the very
+# start of the text) still keeps its sign ("fell -2.3%"). U+2212, the actual minus sign
+# character, is unconditionally a sign regardless of what precedes it -- a hyphen is never
+# typeset as U+2212, so there is no ambiguity to resolve for it. Here "letter or digit" means any
+# Unicode word character (\w), not only ASCII, so "Nestlé-2026" and "Société-2025" end in a
+# hyphen, not in a signed year.
 NUMBER_PATTERN = re.compile(r"(?:\u2212|(?<!\w)-)?\d+(?:,\d{3})*(?:\.\d+)?")
 # The end of a sentence: sentence punctuation, then any citation markers that trail it ("filed. [1][2]"), then
-# whitespace or the end of the text. A marker after the punctuation stays with the sentence it closes (correction 13a).
+# whitespace or the end of the text. A marker after the punctuation stays with the sentence it closes.
 # A marker inside a sentence ends nothing: a live run's "a sector update [1] and a company announcement [2]." was cut
 # after "[1]" by the previous rule, which also split after every "]", so every later citation index was off by one.
 SENTENCE_END_PATTERN = re.compile(r"[.!?](?:\s*\[\d+\])*(?=\s|$)")
@@ -106,31 +105,30 @@ CURRENCY_SYMBOLS = {"$", "€", "£"}  # $, €, £
 # One case-insensitive unit source shared by numeric tokens and number words. "%" is matched
 # bare (a trailing \b after a symbol can fail at end-of-string, since neither side is a word
 # character there); every word alternative gets its own \b so e.g. "percent" can never match as
-# a prefix of an unrelated longer word. Fix round 3, item 3: a multi-word unit's own words may be
-# joined by whitespace OR a hyphen ("basis-point", "per-cent", "percentage-point"). Fix round 5,
-# item 4: they may also touch ("basispoints"), which is what deleting an invisible character
-# between them produces ("percentage<U+200B>point"), so their internal separator is [\s-]*, zero
-# or more. Order lists compound phrases before the single word they contain (matters only for
-# readability -- regex backtracking finds any matching alternative regardless of order).
+# a prefix of an unrelated longer word. A multi-word unit's own words may be joined by whitespace
+# OR a hyphen ("basis-point", "per-cent", "percentage-point"). They may also touch
+# ("basispoints"), which is what deleting an invisible character between them produces
+# ("percentage<U+200B>point"), so their internal separator is [\s-]*, zero or more. Order lists
+# compound phrases before the single word they contain (matters only for readability -- regex
+# backtracking finds any matching alternative regardless of order).
 UNIT_SOURCE = (
     r"%|percentage[\s-]*points?\b|percentage\b|per[\s-]*cent\b|percent\b|pct\b|"
     r"basis[\s-]*points?\b|bps\b|bp\b|pp\b|points?\b|dollars?\b|cents?\b|usd\b"
 )
-# Fix round 3, item 4, extended in fix round 4, item 5: labels that merely contain digits are
-# not quantities and are removed before tokenizing, case-insensitively, the same way dates and
-# citations are: index names, clinical-trial phases, quarter and half labels, and SEC form names.
-# Roman numerals are tried longest-first (IV before III before II before I) so e.g. "Phase III"
-# is never left with a dangling, unremoved "I" or "II". Fix round 5, item 3: "Form" is matched
-# case-sensitively ((?-i:...) inside the case-insensitive pattern), so the verb in "together they
-# form 4 of the top 10 holdings" is never read as the SEC form name.
+# Labels that merely contain digits are not quantities and are removed before tokenizing,
+# case-insensitively, the same way dates and citations are: index names, clinical-trial phases,
+# quarter and half labels, and SEC form names. Roman numerals are tried longest-first (IV before
+# III before II before I) so e.g. "Phase III" is never left with a dangling, unremoved "I" or
+# "II". "Form" is matched case-sensitively ((?-i:...) inside the case-insensitive pattern), so
+# the verb in "together they form 4 of the top 10 holdings" is never read as the SEC form name.
 LABEL_SOURCE = (
     r"S&P\s*500|Nasdaq[\s-]+100|Russell\s+[123]000|"
     r"Phase[\s-]+(?:[1-4][ab]?(?:/\d[ab]?)?|IV|III|II|I)|"
     r"Q[1-4]|H[12]|"
     r"10-[KQ]|8-K|20-F|6-K|S-[134]|(?-i:Form)\s+4"
 )
-# Fix round 4, item 1: a label is removed only when it stands alone, so removing it can never
-# swallow a number (the module's rule: never remove a substring from inside a number).
+# A label is removed only when it stands alone, so removing it can never swallow a number (the
+# module's rule: never remove a substring from inside a number).
 #   - (?<!\d\.): it does not start right after a digit and a decimal point, where a label that
 #     begins with digits would be the decimal part of a number ("8-K" in "1.8-K"). A comma needs
 #     no guard here: a thousands group is always three digits, and no label starts with three.
@@ -159,23 +157,22 @@ MONTH_DAY_PATTERN = re.compile(
     rf"\b{MONTH_SOURCE}\.?\s+[0-3]?\d(?:st|nd|rd|th)?\b(?![.,]\d)(?![\s-]*(?i:{UNIT_SOURCE}))"
     rf"|(?<![\d.,])\b[0-3]?\d(?:st|nd|rd|th)?\s+{MONTH_SOURCE}\b"
 )
-# Fix round 3, item 2 (regression from round 2): the optional "a " gap applies ONLY after a
-# number word ("half a percent", "half-a-percent"), never after a numeric token -- otherwise
-# "In 2025 a dollar of revenue cost more." would misread "2025 a dollar" as the year 2025
-# attaching to the unit "dollar" through the article, and lose its year exemption. Fix round 3,
-# item 3: "a" may itself be joined by whitespace or a hyphen on either side ("half-a-point").
-# Fix round 4, item 2: at least one separator must follow the "a" ([\s-]+, not [\s-]*), so a word
-# that merely begins with "a" is never split into "a" plus a unit ("one app" is not "one a pp").
+# The optional "a " gap applies ONLY after a number word ("half a percent", "half-a-percent"),
+# never after a numeric token -- otherwise "In 2025 a dollar of revenue cost more." would
+# misread "2025 a dollar" as the year 2025 attaching to the unit "dollar" through the article,
+# and lose its year exemption, as an earlier version did. The "a" may itself be joined by
+# whitespace or a hyphen on either side ("half-a-point"). At least one separator must follow the
+# "a" ([\s-]+, not [\s-]*), so a word that merely begins with "a" is never split into "a" plus a
+# unit ("one app" is not "one a pp").
 UNIT_AFTER_WORD_PATTERN = re.compile(rf"^[\s-]*(?:a[\s-]+)?(?:{UNIT_SOURCE})", re.IGNORECASE)
 BARE_YEAR_PATTERN = re.compile(r"^\d{4}$")
 WORD_PATTERN = re.compile(r"[A-Za-z]+")
 
-# The full number-word vocabulary (item 3 of the round-2 ruling). one..ninety and dozen/half/
-# quarter are allowed as plain counts ("four of five sessions", "the first half", "a five-day
-# window") and are a finding only when they're used as a quantity instead -- immediately
-# followed by a unit, or immediately preceded by a currency symbol. The magnitude words are
-# never plain counts in practice and are always a finding, unit or not ("two trillion dollars",
-# "a million users").
+# The full number-word vocabulary. zero..ninety and dozen/half/quarter are allowed as plain counts
+# ("four of five sessions", "the first half", "a five-day window") and are a finding only when
+# they're used as a quantity instead -- immediately followed by a unit, or immediately preceded
+# by a currency symbol. The magnitude words are never plain counts in practice and are always a
+# finding, unit or not ("two trillion dollars", "a million users").
 ALLOWED_NUMBER_WORDS = {
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
     "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
@@ -206,12 +203,12 @@ def _preprocess(text: str) -> str:
     into their ASCII equivalents, a spaced figure, en or em dash (an aside) becomes ";", every
     other dash look-alike becomes "-", and invisible characters are deleted.
 
-    Fix round 5, item 7: citation markers are removed before labels, so one between a label and
-    a unit ("S&P 500[1]%") cannot hide the unit from the label's unit lookahead.
+    Citation markers are removed before labels, so one between a label and a unit ("S&P 500[1]%")
+    cannot hide the unit from the label's unit lookahead.
 
-    Fix round 5, item 5: a removed label becomes "_", not a space. "_" is a word character, so a
-    hyphen straight after a label is still read as a hyphen ("Q3-2026" keeps the bare year 2026),
-    and no number, number-word, unit, currency or date pattern ever matches "_"."""
+    A removed label becomes "_", not a space. "_" is a word character, so a hyphen straight after
+    a label is still read as a hyphen ("Q3-2026" keeps the bare year 2026), and no number,
+    number-word, unit, currency or date pattern ever matches "_"."""
     text = unicodedata.normalize("NFKC", text)
     text = SPACED_DASH_ASIDE_PATTERN.sub(";", text)
     text = HYPHEN_LOOKALIKE_PATTERN.sub("-", text)

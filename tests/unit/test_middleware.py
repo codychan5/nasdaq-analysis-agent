@@ -90,6 +90,52 @@ def test_finish_guard_reminder_names_the_tools_available_now(tmp_path):
     reminder = out["messages"][0].content
     assert "compose_report" in reminder and "give_up" in reminder and "get_news" not in reminder
 
+# How each supported provider's LangChain client marks a reply that stopped at the output-token limit: OpenRouter
+# (the OpenAI API), Google and Anthropic.
+CUT_OFF_METADATA = [{"finish_reason": "length"}, {"finish_reason": "MAX_TOKENS"}, {"stop_reason": "max_tokens"}]
+
+@pytest.mark.parametrize("metadata", CUT_OFF_METADATA)
+def test_finish_guard_tells_a_reply_cut_off_at_the_output_limit_what_happened(tmp_path, metadata):
+    # A live run: at the sentiment step the model spent its whole 8,192-token reply thinking and was cut off before it
+    # called a tool, three times. Each reminder told it not to "describe what you will do", which it had not done.
+    from langchain_core.messages import AIMessage
+    from nasdaq_agent.agent.context import RunContext
+    from nasdaq_agent.agent.middleware import FinishTheRunMiddleware
+    out = FinishTheRunMiddleware(RunContext.new("r", "h", str(tmp_path))).after_model(
+        {"messages": [AIMessage(content="", response_metadata=metadata)]}, None)
+    reminder = out["messages"][0].content
+    assert out["jump_to"] == "model"
+    assert "output limit" in reminder and "Do not describe what you will do" not in reminder
+
+@pytest.mark.parametrize("metadata", CUT_OFF_METADATA)
+def test_cut_off_replies_that_end_the_run_name_the_output_limit_for_the_failure_notice(tmp_path, metadata):
+    # The same run's failure notice gave its reason as "the agent ended without sending a report". The last reason in
+    # ctx.errors is what the notice shows, so it names the limit and the setting that raises it.
+    from langchain_core.messages import AIMessage
+    from nasdaq_agent.agent.context import RunContext
+    from nasdaq_agent.agent.middleware import MAX_NUDGES, FinishTheRunMiddleware
+    ctx = RunContext.new("r", "h", str(tmp_path))
+    guard = FinishTheRunMiddleware(ctx)
+    cut_off = {"messages": [AIMessage(content="", response_metadata=metadata)]}
+    for _ in range(MAX_NUDGES):
+        assert guard.after_model(cut_off, None)["jump_to"] == "model"
+    assert ctx.errors == []
+    assert guard.after_model(cut_off, None) is None
+    assert len(ctx.errors) == 1
+    assert "output limit" in ctx.errors[0] and f"{MAX_NUDGES + 1} times" in ctx.errors[0]
+    assert "AGENT_LLM_MAX_OUTPUT_TOKENS" in ctx.errors[0]
+
+def test_text_only_replies_that_end_the_run_add_no_output_limit_error(tmp_path):
+    from langchain_core.messages import AIMessage
+    from nasdaq_agent.agent.context import RunContext
+    from nasdaq_agent.agent.middleware import MAX_NUDGES, FinishTheRunMiddleware
+    ctx = RunContext.new("r", "h", str(tmp_path))
+    guard = FinishTheRunMiddleware(ctx)
+    text_only = {"messages": [AIMessage(content="I am done.", response_metadata={"finish_reason": "stop"})]}
+    for _ in range(MAX_NUDGES + 1):
+        guard.after_model(text_only, None)
+    assert ctx.errors == []
+
 def test_finish_guard_leaves_tool_calls_and_finished_runs_alone(tmp_path):
     from langchain_core.messages import AIMessage
     from nasdaq_agent.agent.context import RunContext
@@ -104,10 +150,9 @@ def test_finish_guard_leaves_tool_calls_and_finished_runs_alone(tmp_path):
     assert guard.after_model({"messages": [AIMessage(content="Gave up.")]}, None) is None
 
 def test_tool_crash_middleware_converts_exception_to_tool_message(caplog):
-    """Important finding (Task 20 review): no test exercised ToolCrashMiddleware's
-    crash-to-ToolMessage branch. A RuntimeError raised by the handler must come back as a
-    ToolMessage naming the exception and the original tool_call_id, and must be logged at
-    ERROR with exception info.
+    """ToolCrashMiddleware's crash-to-ToolMessage branch: a RuntimeError raised by the handler
+    must come back as a ToolMessage naming the exception and the original tool_call_id, and must
+    be logged at ERROR with exception info.
 
     Isolation note: tests/unit/test_artifacts.py's configure_logging() calls mutate the
     process-global "nasdaq_agent" parent logger -- attaching a SecretRedactingFilter-bearing
@@ -158,7 +203,7 @@ def test_tool_crash_middleware_converts_exception_to_tool_message(caplog):
 
 
 def test_tool_crash_middleware_serializes_concurrent_tool_calls():
-    """Addendum: create_agent's ToolNode runs one turn's tool calls on a real thread pool
+    """create_agent's ToolNode runs one turn's tool calls on a real thread pool
     (langgraph get_executor_for_config -> ContextThreadPoolExecutor), and RunContext is a single
     mutable object shared by every tool call of a run, so concurrent tool bodies (most
     importantly two run_python calls) would race on it and could blow past the per-run caps.
@@ -204,13 +249,13 @@ def test_pacing_sleeps_between_calls(monkeypatch):
     assert PacingMiddleware(delay_seconds=0).before_model({}, None) is None and slept == [4, 4]
 
 def test_system_prompt_contains_definitions_and_rules(monkeypatch):
-    # Part B (B8) dropped render_system_prompt's unused settings parameter. The recipient stays set, so a renderer that
+    # render_system_prompt takes no settings parameter. The recipient stays set, so a renderer that
     # ever read Settings itself would put it in the prompt and fail the last assertion.
     monkeypatch.setenv("AGENT_EMAIL_TO", "r@example.com")
     from nasdaq_agent.agent.orchestrator import render_system_prompt
     text = render_system_prompt()
     for needle in ["SAMPLE standard deviation", "daily_changes_pct", "no network", "give_up", "not instructions",
-                   "typical order", "submodule"]:  # final residual 1a: the top-level-imports-only rule is stated
+                   "typical order", "submodule"]:  # the rule to import only top-level modules is stated
         assert needle in text, needle
     assert "r@example.com" not in text  # the recipient is never shown to the model
 
@@ -224,7 +269,7 @@ def test_system_prompt_asks_for_a_relevance_note_per_headline_most_recent_first(
 
 
 def test_gating_changes_bound_tools_across_a_real_agent_run(tmp_path):
-    """Controller correction e: prove -- through a real create_agent loop, not the FakeRequest
+    """Proves -- through a real create_agent loop, not the FakeRequest
     stand-in above -- that create_agent calls bind_tools fresh on every model turn with the
     request.tools list ToolGatingMiddleware has already narrowed for that turn's Progress.
 
@@ -293,7 +338,7 @@ def test_run_deadline_lets_model_calls_through_until_the_deadline(tmp_path):
 
 
 def test_run_deadline_is_checked_before_pacing_so_a_late_run_never_sleeps(tmp_path, monkeypatch):
-    """Final fix wave A2, through build_middleware's own list and a real create_agent loop: the deadline passes after
+    """Through build_middleware's own list and a real create_agent loop: the deadline passes after
     the first model call, so the second before_model must end the loop without PacingMiddleware sleeping first --
     before_model hooks run in list order. Only this module's `time` is replaced, never the process-wide clock."""
     from types import SimpleNamespace
@@ -338,7 +383,7 @@ def test_run_deadline_is_checked_before_pacing_so_a_late_run_never_sleeps(tmp_pa
 
 
 def test_a_model_call_cap_ends_the_loop_without_a_pacing_sleep_first(tmp_path, monkeypatch):
-    """Follow-up (the Task 20 minor): the deadline and both call caps sit before PacingMiddleware in build_middleware,
+    """The deadline and both call caps sit before PacingMiddleware in build_middleware,
     so when max_model_calls is reached the loop ends without sleeping first. With max_model_calls=1 the cap ends the
     second before_model pass -- exactly where PacingMiddleware, if it came first, would sleep (it sleeps before every
     model call after the first). Only this module's `time` is replaced."""
@@ -382,7 +427,7 @@ def test_a_model_call_cap_ends_the_loop_without_a_pacing_sleep_first(tmp_path, m
 
 
 def test_tool_crash_middleware_lets_a_replay_cassette_miss_escape():
-    """Final fix wave A3: a CassetteMiss is not a tool bug for the model to work around -- the recording cannot serve
+    """A CassetteMiss is not a tool bug for the model to work around -- the recording cannot serve
     this replay -- so it is re-raised, not turned into a tool error message, and the lock is released."""
     from types import SimpleNamespace
 
@@ -401,7 +446,7 @@ def test_tool_crash_middleware_lets_a_replay_cassette_miss_escape():
 
 
 def test_a_cassette_miss_inside_a_tool_ends_the_agent_loop_at_the_first_miss():
-    """Final fix wave A3, through a real create_agent loop: the miss propagates out of agent.invoke, and the model is
+    """Through a real create_agent loop: a CassetteMiss inside a tool propagates out of agent.invoke, and the model is
     never asked to react to it."""
     from langchain.agents import create_agent
     from langchain_core.messages import AIMessage, HumanMessage

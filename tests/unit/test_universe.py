@@ -13,7 +13,7 @@ ZTEST|NASDAQ TEST STOCK|G|Y|N|100|N|N
 BABA|Alibaba Group Holding Limited - American Depositary Shares|Q|N|N|100|N|N
 PACA|Preferred Apartment Communities, Inc. - Class A Common Stock|Q|N|N|100|N|N
 XBND|Xyz Corp - 6.5% Notes due 2031|G|N|N|100|N|N
-File Creation Time: 0925202621:31|||||||
+File Creation Time: 0924202608:05|||||||
 """
 
 def test_parse_and_classify():
@@ -66,6 +66,30 @@ def test_load_universe_refetches_when_stale(tmp_path):
     os.utime(cache, (old_time, old_time))
     u = load_universe(fetch, cache, max_age_hours=24)
     assert len(calls) == 1 and u.is_common_stock("TSLA")
+
+HEADER_ONLY = SAMPLE.splitlines()[0] + "\n"
+CAPTIVE_PORTAL = "<html><body>Sign in to the network</body></html>"
+
+@pytest.mark.parametrize("bad", [HEADER_ONLY, CAPTIVE_PORTAL])
+def test_a_bad_symbol_file_is_never_cached(tmp_path, bad):
+    """A captive-portal page or a header-only file must not be cached, or every run for the next day reads it."""
+    from nasdaq_agent.universe import UniverseError, load_universe
+    cache = tmp_path / "nasdaqlisted.txt"
+    with pytest.raises(UniverseError):
+        load_universe(lambda url: bad, cache)
+    assert not cache.exists()
+
+@pytest.mark.parametrize("bad", [HEADER_ONLY, CAPTIVE_PORTAL])
+def test_an_unusable_cached_symbol_file_is_fetched_again(tmp_path, bad):
+    from nasdaq_agent.universe import load_universe
+    calls = []
+    def fetch(url):
+        calls.append(url)
+        return SAMPLE
+    cache = tmp_path / "nasdaqlisted.txt"
+    cache.write_text(bad)  # fresh, so only its content makes it unusable
+    u = load_universe(fetch, cache)
+    assert len(calls) == 1 and u.is_common_stock("TSLA") and cache.read_text() == SAMPLE
 
 def test_empty_universe_raises():
     from nasdaq_agent.universe import Universe, UniverseError

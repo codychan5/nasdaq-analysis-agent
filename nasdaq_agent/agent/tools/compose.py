@@ -11,11 +11,12 @@ from ...report.schemas import Citation, DeclaredMetric, HeadlineNote, Narrative
 from ...sources.errors import CassetteMiss
 from ..context import AttemptInfo, ReportInfo, RunContext
 from .common import Deps, err, log, ok, precondition, record_call
+from .news import finish_news_step
 
 MAX_REWRITES = 2
 JUDGE_ERROR_CHARS = 300
 CHART_FILENAME = "chart.png"
-# Decoration degradations (spec section 10: each degrades the run to exit 2, never fails it). News and
+# Decoration degradations (each degrades the run to exit 2 and never fails it). News and
 # sentiment are derived from the final state at render time (a named news source that failed and was then
 # retried successfully must leave no stale note). The chart note is decided again on each attempt, where the
 # chart is drawn, and the judge note is recorded where it is caught.
@@ -31,7 +32,7 @@ PRICE_DISAGREEMENT_NOTE = "closes disagree with a second price source"
 TEMPLATE_PROSE_NOTE = "narrative is template-generated after grounding failures"
 # What each degradation says in the email, in plain words. The notes themselves stay fixed, because summary.json records
 # them and the README lists them; only the email words them for a reader. A note without an entry is shown as it is,
-# never dropped. B3: the template sentence carries no rewrite count, which would go stale when MAX_REWRITES changes.
+# never dropped. The template sentence carries no rewrite count, which would go stale when MAX_REWRITES changes.
 PROBLEM_TEXTS = {
     NEWS_NOT_FETCHED_NOTE: "No news: the news step did not run, so there are no headlines.",
     NEWS_UNAVAILABLE_NOTE: "No news: every news source failed, so there are no headlines.",
@@ -62,13 +63,13 @@ JUDGE_UNNAMED_ISSUE = ("judge: the paragraphs are not faithful to the verified d
 def _validation_summary(error: ValidationError) -> str:
     """Field and problem for each invalid part of the narrative. Built from errors(include_url=False): this text
     reaches the model, and pydantic's documentation URL names its version, so an upgrade would change the next prompt
-    (Tasks 22+23 fix round 1, Important 2)."""
+    and replay would miss its recording."""
     return "; ".join(f"{'.'.join(str(part) for part in detail['loc']) or 'narrative'}: {detail['msg']}"
                      for detail in error.errors(include_url=False))
 
 
 def _verified_attempt_info(ctx: RunContext) -> AttemptInfo | None:
-    """Review fix (Important): the report must cite the attempt verify_analysis actually
+    """The report must cite the attempt verify_analysis actually
     verified, not whichever run_python call happened to run last (which may have failed, or
     succeeded but never been re-verified)."""
     if ctx.analysis.verified_attempt is None:
@@ -130,12 +131,12 @@ def _background(ctx: RunContext) -> list[str]:
 
 
 def _derive_news_and_sentiment_degradations(ctx: RunContext) -> None:
-    """Decide the news and sentiment degradations from the final state, at render time (spec
-    section 10). Called once per composed report, from _finish. The confirmed review bug this
-    fixes: a named news source that failed recorded 'news unavailable from every source' eagerly
-    and kept it after a later source succeeded, so the run exited 2 with news present. The sentiment
-    note is re-derived too: an attempt that fails to render leaves compose_report offered, and the
-    model may record sentiment before the next attempt."""
+    """Decide the news and sentiment degradations from the final state, at render time. Called once
+    per composed report, from _finish. Deciding it here, not when a source fails, means a named news
+    source that failed cannot leave 'news unavailable from every source' behind after a later source
+    succeeded, which would exit 2 with news present. The sentiment note is re-derived too: an attempt that fails
+    to render leaves compose_report offered, and the model may record sentiment before the next
+    attempt."""
     # Remove any stale news or sentiment note first, then re-derive the correct ones (if any).
     for stale in (NEWS_NOT_FETCHED_NOTE, NEWS_UNAVAILABLE_NOTE, SENTIMENT_UNAVAILABLE_NOTE):
         while stale in ctx.degradations:
@@ -175,7 +176,7 @@ def _derive_template_prose_degradation(ctx: RunContext, template_prose: bool) ->
 def _finish(ctx: RunContext, deps: Deps, narrative: Narrative | None, template_prose: bool, findings: list[str], judge_faithful: bool | None) -> str:
     _derive_news_and_sentiment_degradations(ctx)
     _derive_price_check_degradation(ctx)
-    # A chart error is a decoration, never fatal (spec section 10). The report renders without the
+    # A chart error is a decoration, never fatal. The report renders without the
     # chart in both HTML and text, the email is built with no inline image, and "chart unavailable"
     # is recorded so finalize exits 2. Rendered before ReportContext so the problems carry the note.
     # Each attempt decides the note again: one that failed to render may have left it after a chart
@@ -236,10 +237,11 @@ def make_compose_report(ctx: RunContext, deps: Deps):
         shows one entry per story in that order, tagged with every source. Leave news_paragraph and headline_notes
         empty if there are no headlines. Every number you write must appear in declared_metrics with its verified
         value (a verified metric name, or session_pct_change, prev_close or close for the session's own move and
-        closing prices), except that a note, or a news sentence, may quote a figure its own headlines state. Clock
-        times and dates are fine. The numbers in the email itself come from the verified state, never from this
+        closing prices), except that a note, or a news sentence, may quote a figure its own headlines state. A number
+        may be rounded as a reader expects: it matches when it is the value the tools returned, rounded to the
+        decimals shown, so 288% and 287.98% both match 287.9808, but 287.9% does not. Clock times and dates are fine. The numbers in the email itself come from the verified state, never from this
         prose. Returns a critique to rewrite, or confirms the report is composed."""
-        # Amendment: every return path below funnels through _record, so tool_log.jsonl gets
+        # Every return path below funnels through _record, so tool_log.jsonl gets
         # exactly one entry per call whatever the outcome, including the invalid-narrative
         # (ValidationError) refusal that used to return early without recording.
         def _record(outcome: str) -> str:
@@ -250,24 +252,28 @@ def make_compose_report(ctx: RunContext, deps: Deps):
         blocked = precondition(ctx, "verified", "compose_report", "verify_analysis must pass first")
         if blocked:
             return _record(blocked)
-        # Review fix (Important, B2): a finished stage must close, in the other tools' style. Once
+        # A finished stage must close, in the other tools' style. Once
         # the report has been composed, composing again could only replace a finished report (and,
         # after send, one nobody will ever see) -- refuse rather than silently redo finished work.
         # composed is set only on success (in _finish), so a rewrite loop, which never sets it, is
         # unaffected. This also covers the already-sent case, since send requires a composed report.
         if ctx.progress.composed:
             return _record(err("precondition for compose_report not met: the report has already been composed"))
+        # get_news for one named source leaves the others untried and the news step open. The headlines it gathered
+        # must still reach the report, and a source that answered must not be reported as a failure.
+        if ctx.news is None and any(attempt.ok for attempt in ctx.news_sources_tried):
+            finish_news_step(ctx)
         try:
             narrative = Narrative(trend_paragraph=trend_paragraph, news_paragraph=news_paragraph,
                                   declared_metrics=declared_metrics, citations=citations, headline_notes=headline_notes)
         except ValidationError as e:
             return _record(err(f"invalid narrative: {_validation_summary(e)}"))
         headlines = ctx.news.headlines if ctx.news else []
-        # Controller correction b: these three names -- not produced by verify_analysis, since
+        # These three names -- not produced by verify_analysis, since
         # they come from find_top_gainer -- become declarable alongside the metric names, so
         # the narrative may quote the session's own close-to-close move and prices.
         extra_facts = {"session_pct_change": ctx.gainer.pct_change, "prev_close": ctx.gainer.prev_close, "close": ctx.gainer.close}
-        # Review fix (Critical): a year-shaped number is exempt from the grounding check only
+        # A year-shaped number is exempt from the grounding check only
         # for years the model could legitimately be writing about -- the session's own year and
         # the one before it (e.g. "since 2025"). Any other 19xx/20xx-shaped number must match a
         # declared value like any other number.
@@ -275,8 +281,8 @@ def make_compose_report(ctx: RunContext, deps: Deps):
         grounding = check_grounding(narrative, ctx.analysis.verified_result, headlines, extra_facts=extra_facts,
                                     exempt_years={session_year, session_year - 1})
         findings = list(grounding.findings)
-        # Review fix (Important): with no headlines to cite, the news paragraph must be empty;
-        # anything else is uncited prose that check_grounding never sees, because its own
+        # With no headlines to cite, the news paragraph must be empty;
+        # anything else is uncited text that check_grounding never sees, because its own
         # citation loop is skipped entirely when there are no headlines to check ids against.
         if not headlines and news_paragraph.strip():
             findings.append("no headlines were fetched; leave news_paragraph empty")
@@ -292,20 +298,20 @@ def make_compose_report(ctx: RunContext, deps: Deps):
                     issues = [f"judge: \"{i.sentence}\": {i.problem}" for i in verdict.issues]
                     findings.extend(issues or [JUDGE_UNNAMED_ISSUE])
             except CassetteMiss as e:
-                # Fix round 1, K3: in replay the verdict comes from the cassette. A miss means the recording cannot
+                # In replay the verdict comes from the cassette. A miss means the recording cannot
                 # serve this run -- not an outage to decorate around -- so it propagates and the run fails loudly
                 # (a failure notice and exit 1), and the run's errors name the judge.
                 ctx.errors.append(f"judge: {type(e).__name__}: {e}"[:JUDGE_ERROR_CHARS])
                 raise
             except Exception:
-                # Controller correction d / B1: intentionally broad. The judge is a decoration on
-                # top of the deterministic grounding check above, not a gate, so an LLM-judge
-                # outage (network, provider, parsing, ...) must never fail an otherwise-grounded
-                # run. It is a degradation, not a plain note (spec section 10: exit 2), recording
-                # that the prose was still checked by the deterministic layer. Logged as a warning
-                # (with traceback) so a real outage is diagnosable, and so a signature mismatch in
-                # deps.judge itself is never mistaken for one. judge_failures is kept for the
-                # recording seal, which must not seal a cassette whose judge verdict is missing.
+                # Intentionally broad. The judge is a decoration on top of the deterministic
+                # grounding check above, not a gate, so an LLM-judge outage (network, provider,
+                # parsing, ...) must never fail an otherwise-grounded run. It is a degradation, not
+                # a plain note, so the run exits 2; the note records that the written summary was
+                # still checked by the deterministic layer. Logged as a warning (with traceback) so
+                # a real outage is diagnosable, and so a signature mismatch in deps.judge itself is
+                # never mistaken for one. judge_failures is kept for the recording seal, which must
+                # not seal a cassette whose judge verdict is missing.
                 log.warning("judge unavailable", exc_info=True)
                 if JUDGE_UNAVAILABLE_NOTE not in ctx.degradations:
                     ctx.degradations.append(JUDGE_UNAVAILABLE_NOTE)

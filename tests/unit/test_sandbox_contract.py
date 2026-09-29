@@ -23,7 +23,7 @@ def test_tail_caps_length():
     assert len(tail("x" * (TAIL_CHARS * 3))) == TAIL_CHARS
 
 def test_contract_error_omits_pydantic_url():
-    # B7: the ContractError text reaches the model, so it must not carry pydantic's version-stamped
+    # The ContractError text reaches the model, so it must not carry pydantic's version-stamped
     # documentation URL (a dependency upgrade would otherwise change the prompt and miss the cache).
     from nasdaq_agent.sandbox.contract import parse_sentinel_output, ContractError, SENTINEL
     with pytest.raises(ContractError) as exc:

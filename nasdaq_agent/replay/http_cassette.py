@@ -1,5 +1,5 @@
-"""HTTP responses fetched through our own client (sources/http.py), stored under their request hash -- and, since fix
-round 1 (K2), requests that failed after their retries, which fail the same way on replay."""
+"""HTTP responses fetched through our own client (sources/http.py), stored under their request hash -- and requests
+that failed after their retries, which fail the same way on replay."""
 from pathlib import Path
 
 from ..sources.errors import CassetteMiss

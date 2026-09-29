@@ -32,8 +32,8 @@ def make_deps_factory(runner_results=None, gainer_sources=None, news_source=None
                     gainer_sources=gainer_sources or [fakes.FakeGainerSource("massive", [fakes.acme_candidate()])],
                     history_sources=[hist], news_sources=news_sources or [news_source or fakes.FakeNewsSource(headlines=good_headlines())],
                     runner=FakeRunner(runner_results or [success()]), transport=FileTransport(run_dir.outbox_dir),
-                    # Controller correction 1: every judge lambda takes the extra_facts keyword,
-                    # matching compose_report's real call site (compose.py calls
-                    # deps.judge(verified, headlines, narrative, extra_facts=extra_facts)).
+                    # Every judge lambda takes the extra_facts and session_facts keywords, matching
+                    # compose_report's real call site (compose.py calls deps.judge(verified, headlines,
+                    # narrative, extra_facts=extra_facts, session_facts=session_facts)).
                     judge=judge or (lambda v, h, n, extra_facts=None, session_facts=None: JudgeVerdict(faithful=True)), clock=clock, run_dir=run_dir)
     return factory

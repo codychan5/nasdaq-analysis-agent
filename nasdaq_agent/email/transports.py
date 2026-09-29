@@ -127,8 +127,8 @@ class FileTransport:
             path = self.outbox_dir / f"{stamp}-{msg['Message-ID'].strip('<>').split('@')[0]}.eml"
             path.write_bytes(bytes(msg))
         except OSError as e:
-            # Fix round 1, item 3: transport contract is that every delivery failure surfaces as
-            # SendError, not a raw OSError -- e.g. outbox_dir already exists as a regular file.
+            # The transport contract is that every delivery failure surfaces as SendError, not a raw OSError -- e.g.
+            # when outbox_dir already exists as a regular file.
             raise SendError(f"file outbox write failed: {type(e).__name__}") from e
         return SendResult(transport=self.name, message_id=msg["Message-ID"], location=str(path))
 

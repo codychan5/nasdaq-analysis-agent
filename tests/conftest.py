@@ -8,7 +8,7 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 @pytest.fixture(autouse=True)
 def _restore_nasdaq_agent_logger():
-    """Controller correction f: configure_logging(...) (nasdaq_agent/artifacts.py) mutates the
+    """configure_logging(...) (nasdaq_agent/artifacts.py) mutates the
     process-global "nasdaq_agent" logger -- handlers, filters, level, propagate -- and nothing
     puts it back, so whichever test last called it (directly, or via graph._prepare) leaves that
     state for every test that runs after it in the same process. pytest's own caplog handler

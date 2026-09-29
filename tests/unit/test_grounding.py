@@ -68,15 +68,14 @@ def test_no_headlines_means_no_citation_checks():
     assert check_grounding(n, verified(), []).ok
 
 def test_exempt_tokens():
-    # Review fix (Critical): years are no longer exempt by default -- the caller must name
-    # which years are in play for this run.
+    # Years are no longer exempt by default -- the caller must name which years are in play for this run.
     from nasdaq_agent.report.grounding import numeric_tokens
     assert numeric_tokens("On 2026-09-24 the stock rose 3.7% over five sessions [1] in 2026", exempt_years={2026}) == ["3.7"]
 
 
 def test_good_narrative_news_paragraph_splits_into_three_cited_sentences():
-    # Controller correction 13a: split_sentences must keep a trailing citation marker
-    # attached to the sentence it cites, not let it start the next sentence.
+    # split_sentences must keep a trailing citation marker attached to the sentence it cites,
+    # not let it start the next sentence.
     from nasdaq_agent.report.grounding import split_sentences
     sentences = split_sentences(good_narrative().news_paragraph)
     assert len(sentences) == 3
@@ -85,8 +84,8 @@ def test_good_narrative_news_paragraph_splits_into_three_cited_sentences():
 
 
 def test_extra_facts_allow_session_and_price_declarations():
-    # Controller correction 13b: extra_facts keys become declarable names alongside
-    # metric names, so the model can quote the session's pct change and closes.
+    # extra_facts keys become declarable names alongside metric names, so the model can quote the
+    # session's percentage change and closes.
     from nasdaq_agent.report.grounding import check_grounding
     from nasdaq_agent.report.schemas import Narrative, DeclaredMetric
     n = Narrative(
@@ -103,10 +102,23 @@ def test_extra_facts_allow_session_and_price_declarations():
     assert not without_facts.ok
 
 
-# Review fix (Critical), redesign: a year-shaped token is exempt only when the caller names it
-# via exempt_years, and only when nothing around it says it's really a quantity ($, a unit).
-# Every complete number is tokenized whole -- never stripped to a substring first -- so a number
-# a year merely happens to prefix (e.g. "1950.2%") can never lose its non-year remainder.
+@pytest.mark.parametrize("written, grounded", [("288%", True), ("287.98%", True), ("287.9808%", True), ("287.9%", False)])
+def test_a_prose_number_matches_its_verified_value_rounded_to_the_decimals_it_shows(written, grounded):
+    """compose_report's description promises the model this rule with these numbers: rounding is accepted, and cutting
+    digits off is not."""
+    from nasdaq_agent.report.grounding import check_grounding
+    from nasdaq_agent.report.schemas import DeclaredMetric, Narrative
+    value = 287.98076878990645
+    narrative = Narrative(trend_paragraph=f"The stock rose {written} across the window.", news_paragraph="",
+                          declared_metrics=[DeclaredMetric(name="cumulative_return_pct", value=value)], citations=[])
+    result = check_grounding(narrative, verified().model_copy(update={"cumulative_return_pct": value}), [])
+    assert result.ok is grounded, result.findings
+
+
+# Years and number words: a year-shaped token is exempt only when the caller names it via
+# exempt_years, and only when nothing around it says it's really a quantity ($, a unit). Every
+# complete number is tokenized whole -- never stripped to a substring first -- so a number a year
+# merely happens to prefix (e.g. "1950.2%") can never lose its non-year remainder.
 
 def _n(trend_paragraph):
     from nasdaq_agent.report.schemas import Narrative
@@ -150,9 +162,9 @@ def test_decimal_number_is_never_treated_as_a_year():
     assert res.ok, res.findings
 
 
-# Every leak the re-review found: each of these used to pass silently. exempt_years={2026,
-# 2025} stands in for a realistic compose_report call (the session year and the one before
-# it) and must not rescue any of these -- none of the numbers below are 2025 or 2026.
+# Each of these leaks used to pass silently. exempt_years={2026, 2025} stands in for a realistic
+# compose_report call (the session year and the one before it) and must not rescue any of
+# these -- none of the numbers below are 2025 or 2026.
 NUMBER_LEAKS_THAT_MUST_NOW_FAIL = [
     "Acme is up 1950.2% since listing.",          # decimal number a year is a substring of
     "Five percentage points were added.",          # compound unit word
@@ -187,7 +199,7 @@ def test_magnitude_word_alone_with_no_unit_is_still_always_a_finding():
     assert any('quantity "million" must be a declared number written in digits' in f for f in res.findings)
 
 
-# Plain counts that must keep passing: one..ninety, dozen/half/quarter are fine whenever no
+# Plain counts that must keep passing: zero..ninety, dozen/half/quarter are fine whenever no
 # unit follows and no currency precedes them.
 SAFE_NUMBER_WORD_PHRASES_THAT_MUST_PASS = [
     "Acme patched a zero-day flaw in its software.",
@@ -215,10 +227,11 @@ def test_good_narrative_number_words_used_as_counts_still_pass():
     assert res.ok, res.findings
 
 
-# Fix round 3: hyphen-spelling gaps and false positives found by the round-2 re-review.
+# Hyphen spellings: gaps and false positives.
 
-# Item 1 (regression from round 2): a "-" directly after a letter or digit is a hyphen joining
-# words, not a minus sign, so it must not be consumed into the number that follows it.
+# A "-" directly after a letter or digit is a hyphen joining words, not a minus sign, so it must
+# not be consumed into the number that follows it. An earlier version treated it as a minus sign,
+# so "mid-2026" read as the signed number "-2026".
 HYPHEN_BEFORE_YEAR_PHRASES_THAT_MUST_PASS = [
     "Acme expects approval in mid-2026.",
     "Guidance reflects pre-2025 levels.",
@@ -252,9 +265,9 @@ def test_unicode_minus_sign_is_always_a_minus():
     assert res.ok, res.findings
 
 
-# Item 2 (regression from round 2): the "a "-gap before a unit applies only after a number
-# word, never after a numeric token -- otherwise "2025 a dollar" would misread the year as
-# attaching to "dollar" through the article and lose its exemption.
+# The "a "-gap before a unit applies only after a number word, never after a numeric token --
+# otherwise "2025 a dollar" would misread the year as attaching to "dollar" through the article
+# and lose its exemption, as an earlier version did.
 @pytest.mark.parametrize("phrase", [
     "In 2025 a dollar of revenue cost more.",
     "In 2026 a point of contention emerged.",
@@ -265,7 +278,7 @@ def test_a_gap_before_unit_applies_only_after_number_words_not_numeric_tokens(ph
     assert res.ok, (phrase, res.findings)
 
 
-# Item 3: U+2010/U+2011 normalise to "-", and a hyphen (or whitespace) joins the words of a
+# U+2010/U+2011 normalise to "-", and a hyphen (or whitespace) joins the words of a
 # multi-word unit, and joins "a" to a number word and its unit on either side.
 HYPHEN_SPELLED_UNIT_PHRASES_THAT_MUST_FAIL = [
     "Acme announced a five-basis-point cut.",
@@ -301,7 +314,7 @@ def test_exempt_year_with_hyphen_spelled_unit_still_fails(phrase):
     assert not res.ok, phrase
 
 
-# Item 4: proper-noun labels that merely contain digits are removed before tokenizing, the way
+# Proper-noun labels that merely contain digits are removed before tokenizing, the way
 # dates and citations are, so they are never mistaken for a quantity to declare.
 PROPER_NOUN_PHRASES_THAT_MUST_PASS = [
     "Acme outperformed the S&P 500 this week.",
@@ -327,9 +340,9 @@ def test_other_numbers_near_a_proper_noun_label_are_still_checked():
     assert not res.ok
 
 
-# Item 5: pin the unit and currency rules using years that ARE in the exempt set -- the round-2
-# leak tests all used years outside the set, so a mutation that gutted the unit/currency rule
-# entirely would still have passed every one of them.
+# Pin the unit and currency rules using years that ARE in the exempt set -- the number-leak tests
+# above all use years outside the set, so a mutation that gutted the unit/currency rule entirely
+# would still pass every one of them.
 RULED_UNIT_SPELLINGS = ["%", "percent", "percentage", "percentage points", "per cent", "pct",
                        "pp", "bp", "bps", "basis points", "points", "dollars", "cents", "usd"]
 
@@ -364,14 +377,14 @@ def test_five_percentage_points_exact_finding_text():
     assert any(f == 'quantity "five percentage points" must be a declared number written in digits' for f in res.findings), res.findings
 
 
-# Fix round 4: label boundaries, the "a" gap, Unicode normalisation, the Unicode-aware hyphen
+# Label boundaries, the "a" gap, Unicode normalisation, the Unicode-aware hyphen
 # rule and common financial labels. Non-ASCII characters are written as escapes so that each
 # one is visible in review.
 
-# Item 1: a label is removed only when it stands alone. A label whose number carries a unit, or
-# runs on through a decimal point or a thousands comma, is a quantity, so the label stays and the
-# whole number is checked. Accepted trade-off (controller ruling): "the S&P 500 points to a
-# recovery" is rejected too, because "points" is a unit.
+# A label is removed only when it stands alone. A label whose number carries a unit, or runs on
+# through a decimal point or a thousands comma, is a quantity, so the label stays and the whole
+# number is checked. Accepted trade-off: "the S&P 500 points to a recovery" is rejected too,
+# because "points" is a unit.
 LABEL_NUMBER_CARRYING_A_UNIT_MUST_FAIL = [
     ("Acme logged an S&P 500% gain.", "500%"),
     ("Acme logged an S&P 500 points gain.", "500"),
@@ -428,7 +441,7 @@ def test_label_is_never_cut_out_of_the_decimal_part_of_a_number():
     assert 'prose token "1.8" is not a declared, verified value' in res.findings, res.findings
 
 
-# Item 2: the "a" gap before a unit needs a separator after the "a", so "app" is never read as
+# The "a" gap before a unit needs a separator after the "a", so "app" is never read as
 # "a" plus the unit "pp".
 @pytest.mark.parametrize("phrase", [
     "Acme's one app strategy drew praise.",
@@ -451,7 +464,7 @@ def test_a_gap_with_a_separator_still_attaches_the_unit(phrase, quantity):
     assert f'quantity "{quantity}" must be a declared number written in digits' in res.findings, (phrase, res.findings)
 
 
-# Item 3: NFKC normalisation first (full-width digits and symbols become ASCII), then every dash
+# NFKC normalisation first (full-width digits and symbols become ASCII), then every dash
 # look-alike becomes "-", then invisible characters are deleted, all before tokenizing.
 UNICODE_SPELLING_PHRASES_THAT_MUST_FAIL = [
     "Margins improved one\u2013percent.",                                # U+2013 en dash
@@ -484,7 +497,7 @@ def test_every_dash_lookalike_joins_a_year_to_its_unit(dash):
 
 @pytest.mark.parametrize("dash", DASH_LOOKALIKES)
 def test_every_dash_lookalike_between_years_is_a_range_hyphen(dash):
-    # Includes the ruled pass case "Guidance covers 2025\u20132026." (en dash range).
+    # Includes the pass case "Guidance covers 2025\u20132026." (en dash range).
     from nasdaq_agent.report.grounding import check_grounding
     res = check_grounding(_n(f"Guidance covers 2025{dash}2026."), verified(), [], exempt_years={2026, 2025})
     assert res.ok, (f"U+{ord(dash):04X}", res.findings)
@@ -504,13 +517,13 @@ def test_invisible_character_inside_a_number_is_deleted(invisible):
 
 
 def test_unicode_minus_sign_is_not_a_dash_lookalike():
-    # U+2212 keeps its round-3 handling: always a sign, even straight after a letter, so a signed
+    # U+2212 keeps its own handling: always a sign, even straight after a letter, so a signed
     # year is never exempt.
     from nasdaq_agent.report.grounding import numeric_tokens
     assert numeric_tokens("Acme targets mid\u22122026.", exempt_years={2026}) == ["-2026"]
 
 
-# Item 4: a hyphen after any letter or digit, ASCII or not, is a hyphen, not a minus sign.
+# A hyphen after any letter or digit, ASCII or not, is a hyphen, not a minus sign.
 @pytest.mark.parametrize("phrase, exempt_years", [
     ("Nestl\u00e9-2026 guidance was reaffirmed.", {2026}),         # precomposed e-acute
     ("Soci\u00e9t\u00e9-2025 results were restated.", {2025}),
@@ -522,8 +535,8 @@ def test_hyphen_after_a_non_ascii_letter_is_a_hyphen(phrase, exempt_years):
     assert res.ok, (phrase, res.findings)
 
 
-# Item 5: common financial labels are removed like the round-3 labels, with the same boundaries
-# and lookaheads as item 1.
+# Common financial labels are removed like the index-name and trial-phase labels above, with the
+# same boundaries and lookaheads, so each is removed only when it stands alone.
 FINANCIAL_LABEL_PHRASES_THAT_MUST_PASS = [
     "Q3 revenue beat estimates.",
     "The company filed an 8-K.",
@@ -572,10 +585,10 @@ def test_financial_label_continued_by_a_number_or_carrying_a_unit_is_checked(phr
     assert f'prose token "{token}" is not a declared, verified value' in res.findings, (phrase, res.findings)
 
 
-# Fix round 5: spaced dash asides, a case-sensitive "Form 4", multi-word units with no separator,
+# Spaced dash asides, a case-sensitive "Form 4", multi-word units with no separator,
 # "_" in place of a removed label, guarded ISO-date removal, and citations removed before labels.
 
-# Item 1: a figure dash, en dash or em dash with whitespace on both sides is an aside, not a hyphen,
+# A figure dash, en dash or em dash with whitespace on both sides is an aside, not a hyphen,
 # so it never joins what comes before it to a unit after it.
 SPACED_DASH_ASIDE_PHRASES_THAT_MUST_PASS = [
     "Acme expects approval in 2026 \u2014 points of contention remain.",
@@ -614,7 +627,7 @@ def test_other_spaced_or_one_sided_dashes_still_attach_the_unit(phrase):
     assert 'prose token "2026" is not a declared, verified value' in res.findings, (phrase, res.findings)
 
 
-# Item 3: "Form" is case-sensitive in the "Form 4" label, so the verb "form" never hides a number.
+# "Form" is case-sensitive in the "Form 4" label, so the verb "form" never hides a number.
 def test_lowercase_form_followed_by_a_number_is_not_a_label():
     from nasdaq_agent.report.grounding import check_grounding
     from nasdaq_agent.report.schemas import DeclaredMetric
@@ -630,7 +643,7 @@ def test_capitalised_form_4_is_still_a_label():
     assert res.ok, res.findings
 
 
-# Item 4: the words of a multi-word unit may touch, so deleting an invisible character between them
+# The words of a multi-word unit may touch, so deleting an invisible character between them
 # can no longer glue them into a word that the unit pattern misses.
 @pytest.mark.parametrize("phrase, finding", [
     ("Margins improved one percentage\u200bpoint.",
@@ -644,8 +657,8 @@ def test_multi_word_unit_with_no_separator_is_still_a_unit(phrase, finding):
     assert finding in res.findings, (phrase, res.findings)
 
 
-# Item 5: a removed label becomes "_", a word character, so a hyphen after it is still a hyphen
-# (the round-3 rule) rather than a minus sign on the number that follows.
+# A removed label becomes "_", a word character, so a hyphen after it is still a hyphen (as after
+# a letter or digit) rather than a minus sign on the number that follows.
 @pytest.mark.parametrize("phrase", [
     "Acme raised its Q3-2026 guidance.",
     "Acme's H1-2026 results beat estimates.",
@@ -662,7 +675,7 @@ def test_number_after_a_hyphenated_trial_phase_is_checked_unsigned():
     assert res.findings == ['prose token "3" is not a declared, verified value']
 
 
-# Item 6: an ISO date is removed only when it stands alone. It must not start right after a digit
+# An ISO date is removed only when it stands alone. It must not start right after a digit
 # and a decimal point or comma, must not be continued by a decimal point or comma and a digit, and
 # must not be followed by a percent sign. Only "%" is checked after a date, so "the 2026-09-24
 # dollar volume" still has its date removed.
@@ -704,7 +717,7 @@ def test_date_followed_by_a_unit_word_is_still_removed():
     assert res.ok, res.findings
 
 
-# Item 7: citation markers are removed before labels, so a citation between a label and a unit can
+# Citation markers are removed before labels, so a citation between a label and a unit can
 # no longer hide the unit from the label's unit lookahead.
 def test_citation_between_a_label_and_a_unit_does_not_hide_the_unit():
     from nasdaq_agent.report.grounding import check_grounding

@@ -7,9 +7,9 @@ pytestmark = pytest.mark.docker
 
 @pytest.fixture(autouse=True)
 def _need_docker():
-    """Controller correction 2: skip with a clear, distinct reason for each of the two
-    environmental preconditions -- an unreachable daemon and a missing sandbox image -- instead
-    of a single generic skip that would hide which one is actually missing.
+    """Skip with a clear, distinct reason for each of the two environmental preconditions -- an
+    unreachable daemon and a missing sandbox image -- instead of a single generic skip that would
+    hide which one is actually missing.
     """
     from nasdaq_agent.sandbox.runner import SANDBOX_IMAGE, docker_available, sandbox_image_available
 

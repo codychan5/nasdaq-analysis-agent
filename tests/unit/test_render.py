@@ -97,7 +97,7 @@ def test_the_footer_says_how_the_report_was_made_and_ends_with_its_reference():
 
 
 def test_headline_links_only_for_http_and_https():
-    # B4: a headline renders as a link only when its URL scheme is http or https. Any other scheme
+    # A headline renders as a link only when its URL scheme is http or https. Any other scheme
     # (javascript:, data:, ...) renders the title as plain text, never as an href.
     from nasdaq_agent.report.render import render_report
     from nasdaq_agent.sources.models import Headline
@@ -120,8 +120,8 @@ def test_headline_links_only_for_http_and_https():
 
 
 def test_headline_link_treats_malformed_urls_as_plain_text():
-    # Final residual 2: urlsplit raises ValueError on some provider URLs (e.g. an unclosed or non-address
-    # IPv6 literal). headline_link must not raise -- it returns None so the title renders as plain text.
+    # urlsplit raises ValueError on some provider URLs (e.g. an unclosed or non-address IPv6 literal).
+    # headline_link must not raise -- it returns None so the title renders as plain text.
     from nasdaq_agent.report.render import headline_link
     assert headline_link("http://[x]/story") is None
     assert headline_link("http://[::1") is None
@@ -129,8 +129,8 @@ def test_headline_link_treats_malformed_urls_as_plain_text():
 
 
 def test_render_report_survives_a_malformed_headline_url():
-    # Final residual 2: a malformed headline URL must not crash render_report (which would end the run
-    # unsent at exit 1). The report renders, with the malformed one shown as plain text and no href.
+    # A malformed headline URL must not crash render_report (which would end the run unsent at exit 1).
+    # The report renders, with the malformed one shown as plain text and no href.
     from nasdaq_agent.report.render import render_report
     from nasdaq_agent.sources.models import Headline
     ctx = make_ctx(headlines=[
@@ -143,9 +143,9 @@ def test_render_report_survives_a_malformed_headline_url():
 
 
 def test_html_output_is_escaped():
-    # Controller correction 14a: select_autoescape(["html"]) never matches the template
-    # name "report.html.j2", so escaping was silently off. Untrusted headline titles and
-    # model prose must not pass through as raw HTML/script.
+    # select_autoescape(["html"]) never matches the template name "report.html.j2", so
+    # escaping was silently off. Untrusted headline titles and the model's written summary
+    # must not pass through as raw HTML/script.
     from nasdaq_agent.report.render import render_report
     from nasdaq_agent.sources.models import Headline
     from tests.unit.test_grounding import good_narrative

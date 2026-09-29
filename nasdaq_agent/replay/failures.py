@@ -1,6 +1,5 @@
-"""Recorded failures (Tasks 22+23 fix round 1, K2). A live call that failed while recording is stored, and fails again
-on replay with the same text, so the model sees exactly what it saw when the recording was made -- typically a
-SourceUnavailable after retries."""
+"""Recorded failures. A live call that failed while recording is stored, and fails again on replay with the same text,
+so the model sees exactly what it saw when the recording was made -- typically a SourceUnavailable after retries."""
 import re
 from pathlib import Path
 from typing import Any, NoReturn

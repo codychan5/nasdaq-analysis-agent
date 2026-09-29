@@ -5,8 +5,9 @@ from langchain_core.tools import tool
 
 from ...calendar import is_market_closed, previous_session_dates
 from ...sources.errors import SourceError, SourceNoData
+from ...universe import UniverseError
 from ...validation import detect_split, reconcile_pct
-from ..context import GainerInfo, RunContext, SkippedCandidate, SourceAttempt
+from ..context import ExcludedCandidate, GainerInfo, ListingInfo, RunContext, SkippedCandidate, SourceAttempt
 from .common import Deps, err, ok, log, precondition, record_call
 
 CANDIDATES_TO_CHECK_PER_SOURCE = 5
@@ -55,14 +56,27 @@ def make_find_top_gainer(ctx: RunContext, deps: Deps):
         if blocked:
             record_call(ctx, deps, "find_top_gainer", {"source": source}, blocked)
             return blocked
-        # Review fix (folded, this round): a finished stage must close. Once a gainer has been
-        # chosen, re-running this tool could only pair the verified five-day metrics with a
-        # different symbol than the one the model already committed to.
+        # A finished stage must close. Once a gainer has been chosen, re-running this tool could only pair the verified
+        # five-day metrics with a different symbol than the one the model already committed to.
         if ctx.progress.gainer_chosen:
             outcome = err("precondition for find_top_gainer not met: a gainer has already been chosen")
             record_call(ctx, deps, "find_top_gainer", {"source": source}, outcome)
             return outcome
         session = date.fromisoformat(ctx.session.date)
+        # Which stocks count is settled before any source is asked: NASDAQ's file for a current session, Massive's
+        # records for an earlier one. Without that list no ranking can be trusted, so no source is tried.
+        try:
+            listing = deps.universe.for_session(session)
+        except UniverseError as e:
+            message = f"could not tell which stocks were listed on NASDAQ on {session}: {e}"
+            if message not in ctx.errors:
+                ctx.errors.append(message)
+            outcome = err(message)
+            record_call(ctx, deps, "find_top_gainer", {"source": source}, outcome)
+            return outcome
+        ctx.listing = ListingInfo(source=listing.source,
+                                  listed_on=listing.listed_on.isoformat() if listing.listed_on else None,
+                                  common_stocks=listing.common_stock_count())
         prev = previous_session_dates(session, 2)[0]
         market_closed = is_market_closed(deps.clock())
         remaining = _remaining(ctx, deps)
@@ -92,6 +106,11 @@ def make_find_top_gainer(ctx: RunContext, deps: Deps):
                 continue
             unchecked: str | None = None
             for cand in candidates:
+                if cand.excluded is not None:
+                    # Ranked above the stocks being checked, but it does not count that day: recorded, never checked.
+                    ctx.excluded_candidates.append(ExcludedCandidate(symbol=cand.symbol, source=src.name,
+                                                                     pct_change=cand.pct_change, reason=cand.excluded))
+                    continue
                 try:
                     closes = _two_closes(deps, cand.symbol, prev, session)
                 except CandidateUncheckable as e:

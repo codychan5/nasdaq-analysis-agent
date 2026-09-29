@@ -1,6 +1,8 @@
 .PHONY: install test test-unit test-graph replay record run schedule compose-up
-# make replay needs no .env: replay never sends mail (it writes to the run's file outbox), so a placeholder recipient
-# will do. Only the replay command receives it; run and record read the real recipient from .env.
+# Replay never sends mail (it writes to the run's file outbox), so a placeholder recipient will do. Only the replay
+# command receives it; run and record read the real recipient from .env. Replay still reads .env: keep the template's
+# AGENT_LLM_JUDGE_MODEL (cp .env.example .env), because the cassette's judge replies are filed under it. Without Docker
+# and the sandbox image, prefix it with AGENT_SANDBOX_BACKEND=subprocess, as CI does.
 AGENT_EMAIL_TO ?= replay@example.com
 
 install:

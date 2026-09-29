@@ -16,7 +16,7 @@ def test_context_rejects_unknown_fields():
 
 
 def test_new_contexts_do_not_share_mutable_state():
-    # Controller correction 3: every mutable default (Progress, AnalysisInfo, and every
+    # Every mutable default (Progress, AnalysisInfo, and every
     # list field) must come from Field(default_factory=...), so two RunContext.new()
     # instances never share the same underlying Progress/AnalysisInfo/list object.
     from nasdaq_agent.agent.context import RunContext

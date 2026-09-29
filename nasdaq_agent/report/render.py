@@ -15,7 +15,7 @@ TEMPLATE_DIR = Path(__file__).parent / "templates"
 # (a degradation, exit 2). A sent report always has re-checked figures, because sending requires a verified analysis.
 STATUS_ALL_GOOD = "everything worked, and every calculated figure was re-checked by separate code."
 STATUS_NEEDS_ATTENTION = "some things need your attention."
-# B4: schemes a headline may be rendered as a clickable link. Anything else (javascript:, data:, ...) is
+# Schemes for which a headline may be rendered as a clickable link. Anything else (javascript:, data:, ...) is
 # rendered as plain text so an untrusted headline URL cannot smuggle an active-content link into the email.
 LINKABLE_URL_SCHEMES = ("http", "https")
 # A headline's publication time in the email: exchange time, to read beside the session date.
@@ -180,13 +180,13 @@ def template_paragraphs(ctx: ReportContext) -> tuple[str, str]:
 
 
 def headline_link(url: str | None) -> str | None:
-    """B4: the URL to render a headline as a link, or None to render the title as plain text. Only http
+    """The URL to render a headline as a link, or None to render the title as plain text. Only http
     and https URLs are linkable; urlsplit lower-cases the scheme, so case does not matter.
 
-    Final residual 2: headline URLs are unvalidated provider data. urlsplit raises ValueError on some
-    malformed inputs (e.g. an unclosed or non-address IPv6 literal like "http://[::1"); a raised
-    exception here would escape render_report and end the run unsent. Any URL that fails to parse is
-    treated as non-linkable and rendered as plain text."""
+    Headline URLs are unvalidated provider data. urlsplit raises ValueError on some malformed inputs
+    (e.g. an unclosed or non-address IPv6 literal like "http://[::1"); a raised exception here would
+    escape render_report and end the run unsent. Any URL that fails to parse is treated as
+    non-linkable and rendered as plain text."""
     if not url:
         return None
     try:
@@ -197,9 +197,9 @@ def headline_link(url: str | None) -> str | None:
 
 
 def _env() -> Environment:
-    # Controller correction 14a: select_autoescape(["html"]) checks the template name against
-    # ".html" only, which "report.html.j2" never matches, so escaping was silently off for an
-    # email body that embeds untrusted headline text and model prose. Match both suffixes so
+    # select_autoescape(["html"]) checks the template name against ".html" only, which
+    # "report.html.j2" never matches, so escaping was silently off for an email body that
+    # embeds untrusted headline text and the model's written summary. Match both suffixes so
     # the html template is autoescaped while the plain-text template (report.txt.j2) is not.
     env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=select_autoescape(enabled_extensions=("html", "html.j2")),
                       trim_blocks=True, lstrip_blocks=True)

@@ -18,5 +18,10 @@ jobs:
       # Only replay against a recorded cassette when one is checked in; a fresh clone
       # with no fixtures/cassettes/manifest.json simply skips this tier. --check passes when
       # the replay ends with the exit code the recording did (a degraded recording is 2 both times).
+      # The cassette's model replies are filed under the template's model names (the judge model above all), so the
+      # replay reads the same .env a reader gets from `cp .env.example .env`. The runner has no sandbox image, so the
+      # replay chooses the subprocess sandbox explicitly: without that choice a run without Docker stops at setup.
       - if: hashFiles('fixtures/cassettes/manifest.json') != ''
-        run: AGENT_EMAIL_TO=ci@example.com nasdaq-agent replay --check
+        run: |
+          cp .env.example .env
+          AGENT_EMAIL_TO=ci@example.com AGENT_SANDBOX_BACKEND=subprocess nasdaq-agent replay --check

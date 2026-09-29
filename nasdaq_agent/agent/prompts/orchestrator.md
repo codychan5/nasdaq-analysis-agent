@@ -29,7 +29,8 @@ story.
 
 Rules for the narrative: every number you write must be one of the declared metrics with its verified value, or one
 of session_pct_change, prev_close and close, declaring the session's own percentage move and closing prices.
-Write for a reader, in plain English: never put a metric name such as volatility_annualized_pct in the prose.
+A number may be rounded: it matches when it is that value rounded to the decimals you show. Write for a reader, in
+plain English: never put a metric name such as volatility_annualized_pct in the prose.
 Cite headline ids like [1] in each news sentence. For every story, write one headline note listing the ids of all its
 headlines. Its summary tells the reader what the story reports, from its headlines' titles and summaries, what it
 means for the company, and how it may relate to the stock's price move, as additional context rather than a proven

@@ -74,3 +74,31 @@ def test_exchange_time_reads_a_naive_timestamp_as_utc_rather_than_failing():
     # A display helper must never fail a report; provider timestamps are UTC by convention.
     from nasdaq_agent.calendar import exchange_time
     assert exchange_time(datetime(2026, 9, 16, 12, 0)) == et(2026, 9, 16, 8, 0)
+
+
+EASTERN_TIME = ZoneInfo("America/New_York")
+AFTER_SEPTEMBER_28_CLOSE = datetime(2026, 9, 28, 20, 30, tzinfo=ZoneInfo("UTC"))  # 16:30 New York
+
+
+def test_a_session_date_pins_the_clock_to_half_past_four_new_york_time():
+    from nasdaq_agent.calendar import clock_for_session_date
+    pinned = clock_for_session_date(date(2026, 7, 8), AFTER_SEPTEMBER_28_CLOSE)
+    assert pinned == datetime(2026, 7, 8, 16, 30, tzinfo=EASTERN_TIME)
+    assert pinned.utcoffset().total_seconds() == -4 * 3600  # daylight time in July
+
+
+@pytest.mark.parametrize("day", [date(2026, 7, 3), date(2026, 7, 4)])  # the Independence Day holiday, a Saturday
+def test_a_session_date_that_is_not_a_trading_day_is_refused(day):
+    from nasdaq_agent.calendar import CalendarError, clock_for_session_date
+    with pytest.raises(CalendarError, match="not a NASDAQ trading day"):
+        clock_for_session_date(day, AFTER_SEPTEMBER_28_CLOSE)
+
+
+def test_a_session_date_whose_session_has_not_closed_is_refused():
+    from nasdaq_agent.calendar import CalendarError, clock_for_session_date
+    during_the_session = datetime(2026, 9, 28, 15, 0, tzinfo=EASTERN_TIME)
+    with pytest.raises(CalendarError, match="not closed"):
+        clock_for_session_date(date(2026, 9, 28), during_the_session)
+    with pytest.raises(CalendarError, match="not closed"):
+        clock_for_session_date(date(2026, 9, 30), AFTER_SEPTEMBER_28_CLOSE)
+    assert clock_for_session_date(date(2026, 9, 28), AFTER_SEPTEMBER_28_CLOSE).date() == date(2026, 9, 28)

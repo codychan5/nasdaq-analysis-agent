@@ -13,8 +13,8 @@ KICKOFF_MESSAGE = "Produce today's top NASDAQ gainer report. Begin."
 
 
 def render_system_prompt() -> str:
-    # B8: the prompt is built only from the static metric definitions and names; it never used the
-    # `settings` argument it used to take, and the recipient must never appear in the prompt anyway.
+    # The prompt is built only from the static metric definitions and names, so this function takes no `settings`
+    # argument: it needs none, and the recipient must never appear in the prompt.
     template = PROMPT_PATH.read_text()
     return template.replace("{definitions}", DEFINITIONS_TEXT.strip()).replace("{required_keys}", ", ".join(METRIC_NAMES))
 

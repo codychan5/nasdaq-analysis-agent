@@ -1,6 +1,8 @@
-"""Task 22 through run_once: record a scripted run into a cassette, then replay it with a model that raises if it is
-ever invoked (correction g), plus the run-level corrections c, e and j and the missing or stale cassette paths.
-Offline: the deps come from tests/graph/conftest.py's fakes, the model is scripted."""
+"""Record and replay through run_once: record a scripted run into a cassette, then replay it with a model that raises
+if it is ever invoked. Also covered: replay never sleeps between model calls and never sends real mail; record reads
+the clock once and seals a cassette only after exit 0 or 2 with no secret in it, never touching anything that is not
+a cassette; and replay with a missing or stale cassette. Offline: the deps come from tests/graph/conftest.py's fakes,
+the model is scripted."""
 import json
 from pathlib import Path
 
@@ -18,8 +20,8 @@ WELL_FORMED_RUN_ID = "20260924T220000Z-abc123"
 
 
 class StableScriptedModel(ScriptedChatModel):
-    """Correction g: the llm_string is part of every cache key, so it must not depend on the instance (its script,
-    its object identity). Pinned here rather than relying on GenericFakeChatModel's current, empty defaults."""
+    """The llm_string is part of every cache key, so it must not depend on the instance (its script, its object
+    identity). Pinned here rather than relying on GenericFakeChatModel's current, empty defaults."""
 
     @property
     def _identifying_params(self) -> dict:
@@ -118,7 +120,7 @@ def test_record_then_replay_round_trip(settings, tmp_path):
     assert (Path(replayed.artifacts_path) / "closing_summary.txt").read_text() == "Sent the report."
     assert replayed_ctx.report.subject == recorded_ctx.report.subject
     assert len(_emails(replayed)) == 1
-    assert get_llm_cache() is None  # correction g: the run's cache is gone once the run ends
+    assert get_llm_cache() is None  # the run's cache is gone once the run ends
 
 
 def test_run_restores_the_previous_global_llm_cache(settings, tmp_path):
@@ -135,7 +137,7 @@ def test_run_restores_the_previous_global_llm_cache(settings, tmp_path):
 
 
 def test_replay_forces_zero_pacing(settings, tmp_path):
-    """Correction c: whatever AGENT_LLM_CALL_DELAY_SECONDS says, replay does not sleep between model calls."""
+    """Whatever AGENT_LLM_CALL_DELAY_SECONDS says, replay does not sleep between model calls."""
     from nasdaq_agent.agent.graph import run_once
     record_settings, replay_settings = _modes(settings, tmp_path)
     run_once(record_settings, now=NOW, model=StableScriptedModel(messages=iter(happy_script())),
@@ -155,7 +157,7 @@ def test_replay_forces_zero_pacing(settings, tmp_path):
 @pytest.mark.parametrize("problem", ["missing", "stale"])
 def test_replay_without_a_valid_cassette_ends_in_a_failure_notice_in_the_outbox(settings, tmp_path, monkeypatch, problem):
     """A missing or stale cassette is a setup failure: a failure notice written to the outbox and exit 1, not a
-    traceback -- and never real mail (correction j), whatever SMTP settings the environment holds."""
+    traceback -- and never real mail, whatever SMTP settings the environment holds."""
     import smtplib
     from pydantic import SecretStr
     from nasdaq_agent.agent.graph import run_once
@@ -180,8 +182,8 @@ def test_replay_without_a_valid_cassette_ends_in_a_failure_notice_in_the_outbox(
 
 
 def test_record_uses_one_clock_captured_at_the_start(settings, tmp_path, monkeypatch):
-    """Correction e: with no --now, record captures now once, at the start; every tool sees that one instant and the
-    manifest stores it. The clock here ticks a second per read, so a second read would show."""
+    """With no --now, record captures now once, at the start; every tool sees that one instant and the manifest
+    stores it. The clock here ticks a second per read, so a second read would show."""
     from datetime import datetime, timedelta
     from nasdaq_agent.agent import graph
     ticks = (NOW + timedelta(seconds=n) for n in range(1000))
@@ -202,8 +204,8 @@ def test_record_uses_one_clock_captured_at_the_start(settings, tmp_path, monkeyp
 
 
 def test_failed_recording_leaves_the_previous_cassette_untouched(settings, tmp_path):
-    """Correction e with K7: the manifest is written only after exit 0 or 2, and a recording happens in a staging
-    directory, so a failed re-recording leaves the earlier cassette exactly as it was and nothing beside it."""
+    """The manifest is written only after exit 0 or 2, and a recording happens in a staging directory, so a failed
+    re-recording leaves the earlier cassette exactly as it was and nothing beside it."""
     from nasdaq_agent.agent.graph import run_once
     record_settings, _ = _modes(settings, tmp_path)
     before = _previous_cassette(tmp_path / "cassette")
@@ -215,8 +217,8 @@ def test_failed_recording_leaves_the_previous_cassette_untouched(settings, tmp_p
 
 
 def test_recording_holding_a_secret_fails_loudly_without_a_manifest(settings, tmp_path):
-    """Correction e: cassettes are committed, so a configured secret anywhere in one blocks the manifest and the run
-    exits 1, naming the file but never the secret."""
+    """Cassettes are committed, so a configured secret anywhere in one blocks the manifest and the run exits 1,
+    naming the file but never the secret. The previous cassette is left exactly as it was, with nothing beside it."""
     from pydantic import SecretStr
     from nasdaq_agent.agent.graph import run_once
     secret = "sk-test-cassette-leak-123"
@@ -230,7 +232,7 @@ def test_recording_holding_a_secret_fails_loudly_without_a_manifest(settings, tm
     log_lines = [json.loads(line) for line in (Path(outcome.artifacts_path) / "log.jsonl").read_text().splitlines()]
     assert any(line["level"] == "ERROR" and "recording not sealed" in line["msg"] for line in log_lines)
     assert secret not in (Path(outcome.artifacts_path) / "log.jsonl").read_text()
-    assert _tree(tmp_path / "cassette") == before and _siblings(tmp_path / "cassette") == ["cassette"]  # K7
+    assert _tree(tmp_path / "cassette") == before and _siblings(tmp_path / "cassette") == ["cassette"]
     ctx = _load_ctx(outcome)
     assert any("recording not sealed" in e and "llm/" in e for e in ctx.errors)
     summary = json.loads((Path(outcome.artifacts_path) / "summary.json").read_text())
@@ -238,11 +240,11 @@ def test_recording_holding_a_secret_fails_loudly_without_a_manifest(settings, tm
     assert secret not in json.dumps(ctx.errors) and secret not in json.dumps(summary)
 
 
-# --- Fix round 1 --------------------------------------------------------------------------------------
+# --- Staged recording, the real judge, exit codes, tracing, environment differences -------------------
 
 def test_recording_replaces_the_previous_cassette_only_after_a_clean_seal(settings, tmp_path):
-    """K7: the recording is staged beside the cassette and swapped in after a clean seal; staging, backup and lock are
-    all gone afterwards. The manifest records the environment and the exit code (K6)."""
+    """The recording is staged beside the cassette and swapped in after a clean seal; staging, backup and lock are
+    all gone afterwards. The manifest records the environment and the exit code."""
     from nasdaq_agent.agent.graph import run_once
     from nasdaq_agent.replay import llm_cache as lc
     from nasdaq_agent.replay.http_cassette import HttpCassette
@@ -260,8 +262,8 @@ def test_recording_replaces_the_previous_cassette_only_after_a_clean_seal(settin
 
 
 def test_recording_refuses_a_directory_that_is_not_a_cassette(settings, tmp_path):
-    """K7 guard: AGENT_CASSETTE_DIR pointing at a non-empty directory with no cassette in it is refused before anything
-    is written or moved."""
+    """AGENT_CASSETTE_DIR pointing at a non-empty directory with no cassette in it is refused before anything is
+    written or moved."""
     from nasdaq_agent.agent.graph import run_once
     from nasdaq_agent.config import Mode
     project = tmp_path / "project"
@@ -290,8 +292,8 @@ def test_setup_failure_while_recording_removes_the_staging_directory(settings, t
 
 
 def test_record_then_replay_round_trip_through_the_real_judge(settings, tmp_path):
-    """Fix round 1, minor 6: the scripted model can produce the judge's structured output (a JudgeVerdict tool call),
-    so the real judge path -- make_judge, with_structured_output, the LLM cache -- is recorded and replayed too."""
+    """The scripted model can produce the judge's structured output (a JudgeVerdict tool call), so the real judge
+    path -- make_judge, with_structured_output, the LLM cache -- is recorded and replayed too."""
     from nasdaq_agent.agent.graph import run_once
     from nasdaq_agent.report.judge import make_judge
     record_settings, replay_settings = _modes(settings, tmp_path)
@@ -315,7 +317,7 @@ def _record_with_the_real_judge(settings, tmp_path):
 
 
 def test_replay_with_a_missing_judge_verdict_fails_loudly(settings, tmp_path):
-    """K3: in replay a judge CassetteMiss is not "judge unavailable": the run fails, with a failure notice and exit 1,
+    """In replay a judge CassetteMiss is not "judge unavailable": the run fails, with a failure notice and exit 1,
     and the run's errors name the judge."""
     from nasdaq_agent.agent.graph import run_once
     from nasdaq_agent.report.judge import make_judge
@@ -331,7 +333,7 @@ def test_replay_with_a_missing_judge_verdict_fails_loudly(settings, tmp_path):
 
 
 def test_recording_with_a_judge_failure_is_not_sealed(settings, tmp_path):
-    """K3: a judge failure while recording ("judge unavailable") leaves its verdict out of the cassette, so the
+    """A judge failure while recording ("judge unavailable") leaves its verdict out of the cassette, so the
     recording is not sealed and the previous cassette stays."""
     from nasdaq_agent.agent.graph import run_once
     record_settings, _ = _modes(settings, tmp_path)
@@ -349,7 +351,7 @@ def test_recording_with_a_judge_failure_is_not_sealed(settings, tmp_path):
 
 
 def test_manifest_records_a_degraded_exit_code_and_replay_reproduces_it(settings, tmp_path):
-    """K6: the manifest stores the recorded exit code; a degraded recording (2) replays as 2."""
+    """The manifest stores the recorded exit code; a degraded recording (2) replays as 2."""
     from nasdaq_agent.agent.graph import run_once
     from nasdaq_agent.replay import llm_cache as lc
     record_settings, replay_settings = _modes(settings, tmp_path)
@@ -366,8 +368,8 @@ def test_manifest_records_a_degraded_exit_code_and_replay_reproduces_it(settings
 
 
 def test_replay_turns_langsmith_tracing_off(settings, tmp_path, monkeypatch):
-    """Fix round 1, minor 4: replay makes no network calls, so LangSmith tracing is off for the run even when
-    LANGSMITH_TRACING is set, and back on afterwards."""
+    """Replay makes no network calls, so LangSmith tracing is off for the run even when LANGSMITH_TRACING is set, and
+    back on afterwards."""
     from langchain_core.tracers.context import _tracing_v2_is_enabled
     from langsmith.utils import get_env_var, tracing_is_enabled
     from nasdaq_agent.agent.graph import run_once
@@ -397,7 +399,7 @@ def test_replay_turns_langsmith_tracing_off(settings, tmp_path, monkeypatch):
 
 
 def test_replay_notes_environment_differences_and_cassette_misses_name_them(settings, tmp_path):
-    """Important 2: a replay in a different environment logs a warning and adds a run note naming each difference,
+    """A replay in a different environment logs a warning and adds a run note naming each difference,
     and every CassetteMiss raised during that run carries them."""
     from nasdaq_agent.agent.graph import run_once
     record_settings, replay_settings = _modes(settings, tmp_path)
@@ -422,15 +424,15 @@ def test_replay_notes_environment_differences_and_cassette_misses_name_them(sett
     assert missed.exit_code == 1 and "CassetteMiss" in errors and "langchain-core 0.0.1 recorded" in errors
 
 
-# --- Fix round 2: recording never moves or deletes anything that is not a cassette ------------------------
+# --- Recording never moves or deletes anything that is not a cassette -------------------------------------
 
 def _layout(root: Path) -> dict[str, bytes | None]:
     return {p.relative_to(root).as_posix(): (None if p.is_dir() else p.read_bytes()) for p in sorted(root.rglob("*"))}
 
 
 def test_recording_into_a_package_directory_changes_nothing(settings, tmp_path):
-    """The reviewer's graph probe: AGENT_CASSETTE_DIR at a package holding a sources/ subpackage deleted
-    sources/adapters.py through run_once. It is now refused before anything is written, moved or deleted."""
+    """AGENT_CASSETTE_DIR at a package holding a sources/ subpackage once deleted sources/adapters.py through
+    run_once. It is now refused before anything is written, moved or deleted."""
     from nasdaq_agent.agent.graph import run_once
     from nasdaq_agent.config import Mode
     package = tmp_path / "project" / "mypkg"
@@ -448,7 +450,7 @@ def test_recording_into_a_package_directory_changes_nothing(settings, tmp_path):
 
 
 def test_a_concurrent_second_recording_is_refused(settings, tmp_path):
-    """Item 5: while one recording holds the lock beside the cassette, a second refuses and leaves both the cassette
+    """While one recording holds the lock beside the cassette, a second refuses and leaves both the cassette
     and the first recording's lock alone."""
     from nasdaq_agent.agent.graph import run_once
     from nasdaq_agent.replay.recording import acquire_recording_lock, release_recording_lock
@@ -468,8 +470,8 @@ def test_a_concurrent_second_recording_is_refused(settings, tmp_path):
 
 
 def test_cleanup_failure_after_the_swap_is_a_warning_and_the_run_exits_clean(settings, tmp_path, monkeypatch):
-    """Item 3 through run_once: the new cassette is live, so a backup that cannot be removed is a warning in the log,
-    not "recording not sealed" and exit 1."""
+    """Once the swap is done the new cassette is live, so a backup that cannot be removed is only a warning in the
+    run's log, not "recording not sealed" and exit 1."""
     from nasdaq_agent.agent.graph import run_once
     from nasdaq_agent.replay import llm_cache as lc
     from nasdaq_agent.replay import recording

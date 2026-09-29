@@ -77,9 +77,9 @@ def test_verify_third_rejection_is_terminal(ready, deps):
     assert ready.progress.analysis_terminal and "terminal" in msg
 
 def test_verify_returns_stored_result_without_recomputing_once_verified(ready, deps):
-    # Review fix (Important): a finished stage must close. Once verified, verify_analysis must
-    # hand back the stored result every time, never recompute and never rewrite
-    # verification.json -- proven here by deleting verification.json and checking it stays gone.
+    # A finished stage must close. Once verified, verify_analysis must hand back the stored
+    # result every time, never recompute and never rewrite verification.json -- proven here by
+    # deleting verification.json and checking it stays gone.
     from nasdaq_agent.agent.tools.code import make_run_python
     from nasdaq_agent.agent.tools.verify import make_verify_analysis
     deps.runner = FakeRunner([success()])
@@ -94,8 +94,8 @@ def test_verify_returns_stored_result_without_recomputing_once_verified(ready, d
     assert not verification_path.exists()
 
 def test_verify_refuses_repeat_call_without_new_attempt(ready, deps):
-    # Review fix (Important): calling verify_analysis twice with no new run_python call in
-    # between must refuse the second call and must NOT spend another rejection.
+    # Calling verify_analysis twice with no new run_python call in between must refuse the
+    # second call and must NOT spend another rejection.
     from nasdaq_agent.agent.tools.code import make_run_python
     from nasdaq_agent.agent.tools.verify import make_verify_analysis
     deps.runner = FakeRunner([success(cumulative_return_pct=12.0)])
@@ -108,8 +108,8 @@ def test_verify_refuses_repeat_call_without_new_attempt(ready, deps):
     assert ready.analysis.rejections == 1
 
 def test_verify_terminal_when_attempts_reach_run_cap(ready, deps):
-    # Review fix (Important): reaching the run cap must end the analysis even when the
-    # rejection count alone would not (here: 2 rejections, cap also lowered to 2 attempts).
+    # Reaching the run cap must end the analysis even when the rejection count alone would not
+    # (here: 2 rejections, cap also lowered to 2 attempts).
     from nasdaq_agent.agent.tools.code import make_run_python
     from nasdaq_agent.agent.tools.verify import make_verify_analysis
     deps.settings = deps.settings.model_copy(update={"max_code_runs": 2})
@@ -124,9 +124,9 @@ def test_verify_terminal_when_attempts_reach_run_cap(ready, deps):
     assert ready.analysis.rejections == 2  # terminal came from the cap, not from rejection count
 
 def test_run_python_refuses_once_verified(ready, deps):
-    # Review fix (Important): a finished stage must close. Once verify_analysis has passed,
-    # run_python must refuse rather than spend more attempts on numbers the report will never
-    # use (compose_report only ever cites the verified attempt).
+    # A finished stage must close. Once verify_analysis has passed, run_python must refuse
+    # rather than spend more attempts on numbers the report will never use (compose_report only
+    # ever cites the verified attempt).
     from nasdaq_agent.agent.tools.code import make_run_python
     _verified(ready, deps)
     assert len(ready.analysis.attempts) == 1
@@ -156,8 +156,7 @@ def test_record_sentiment_refuses_when_no_headlines_were_fetched(ready, deps):
     assert log[-1]["tool"] == "record_sentiment" and log[-1]["outcome"].startswith("ERROR")
 
 def test_record_sentiment_rejects_label_inconsistent_with_score(ready, deps):
-    # Review fix (Important): positive requires score > 0, negative requires score < 0, neutral
-    # requires abs(score) <= 0.25.
+    # Positive requires score > 0, negative requires score < 0, neutral requires abs(score) <= 0.25.
     from nasdaq_agent.agent.tools.sentiment import make_record_sentiment
     tool = make_record_sentiment(ready, deps)
     msg = tool.invoke({"score": 0.6, "label": "negative", "rationale": "x", "per_headline": []})
@@ -169,7 +168,7 @@ def test_record_sentiment_rejects_label_inconsistent_with_score(ready, deps):
     assert msg3.startswith("ERROR") and "inconsistent" in msg3
 
 def test_record_sentiment_rejects_duplicate_headline_ids(ready, deps):
-    # Review fix (Important): duplicate headline ids in per_headline are rejected, recorded.
+    # Duplicate headline ids in per_headline are rejected, and the rejection is recorded in the tool log.
     from nasdaq_agent.agent.tools.sentiment import make_record_sentiment
     tool = make_record_sentiment(ready, deps)
     msg = tool.invoke({"score": 0.5, "label": "positive", "rationale": "x",
@@ -198,8 +197,8 @@ def test_compose_passes_and_renders(ready, deps):
     assert "11.00%" in (deps.run_dir.path / "report.html").read_text()
 
 def test_compose_report_labels_sentiment_as_model_assessed(ready, deps):
-    # Review fix (Important): both templates must label the sentiment as model-assessed, not
-    # imply it is a fact about the world -- checked end to end through the real render path.
+    # Both templates must label the sentiment as model-assessed, not imply it is a fact about
+    # the world -- checked end to end through the real render path.
     from nasdaq_agent.agent.tools.sentiment import make_record_sentiment
     from nasdaq_agent.agent.tools.compose import make_compose_report
     _verified(ready, deps)
@@ -211,9 +210,9 @@ def test_compose_report_labels_sentiment_as_model_assessed(ready, deps):
     assert "model-assessed sentiment: positive, 0.60" in text
 
 def test_compose_uses_verified_attempt_not_latest_attempt(ready, deps):
-    # Review fix (Important): the report must cite the attempt verify_analysis actually
-    # verified, not attempts[-1] -- which can be a later, failed attempt whose hash has
-    # nothing to do with the numbers in the email.
+    # The report must cite the attempt verify_analysis actually verified, not attempts[-1] --
+    # which can be a later, failed attempt whose hash has nothing to do with the numbers in the
+    # email.
     from nasdaq_agent.agent.tools.code import make_run_python
     from nasdaq_agent.agent.tools.verify import make_verify_analysis
     from nasdaq_agent.agent.tools.compose import make_compose_report
@@ -250,7 +249,7 @@ def test_compose_judge_rejection_and_outage(ready, deps):
     def broken(v, h, n, extra_facts=None, session_facts=None): raise RuntimeError("judge down")
     deps.judge = broken
     out = json.loads(make_compose_report(ready, deps).invoke(_good_args()))
-    # B1: a judge outage is a decoration -> it degrades the run (exit 2 via finalize), recorded in
+    # A judge outage is a decoration, so it degrades the run (exit 2 via finalize), recorded in
     # ctx.degradations (not ctx.notes), with the deterministic-layer wording.
     assert out["composed"]
     assert "judge unavailable: prose checked by the deterministic layer only" in ready.degradations
@@ -296,6 +295,17 @@ def test_compose_tool_tells_the_model_the_headline_note_rules(ready, deps):
     assert "60 to 100 words" in description and "plain English" in description
 
 
+def test_compose_tool_and_system_prompt_tell_the_model_that_numbers_may_be_rounded(ready, deps):
+    # A live run's model spent most of a reply's thinking on whether "must appear in declared_metrics with its verified
+    # value" allowed 309.65 for 309.645, and was cut off before any tool call. The grounding check accepts a number
+    # rounded to the decimals it shows, and the model is now told so.
+    from nasdaq_agent.agent.orchestrator import render_system_prompt
+    from nasdaq_agent.agent.tools.compose import make_compose_report
+    description = " ".join(make_compose_report(ready, deps).description.split())
+    prompt = " ".join(render_system_prompt().split())
+    assert "rounded to the decimals" in description and "rounded to the decimals" in prompt
+
+
 def test_compose_asks_for_a_rewrite_when_a_headline_has_no_note(ready, deps):
     from nasdaq_agent.agent.tools.compose import make_compose_report
     from tests.unit.test_grounding import good_notes
@@ -310,9 +320,9 @@ def test_judge_prompt_requires_a_named_sentence_for_an_unfaithful_verdict():
 
 
 def test_compose_calls_judge_with_extra_facts_by_keyword(ready, deps):
-    # Review fix (Important): a recording fake, not just a faithful/unfaithful stub, so a
-    # signature mismatch in deps.judge (e.g. positional-only, no extra_facts) shows up as a
-    # missed call here instead of being silently swallowed as "judge unavailable".
+    # A recording fake, not just a faithful/unfaithful stub, so a signature mismatch in
+    # deps.judge (e.g. positional-only, no extra_facts) shows up as a missed call here instead of
+    # being silently swallowed as "judge unavailable".
     from nasdaq_agent.agent.tools.compose import make_compose_report
     from nasdaq_agent.report.schemas import JudgeVerdict
     _verified(ready, deps)
@@ -336,9 +346,9 @@ def test_compose_calls_judge_with_extra_facts_by_keyword(ready, deps):
                                          "role": "top NASDAQ gainer of the session"}
 
 def test_compose_allows_session_and_price_declarations(ready, deps):
-    # Controller correction b: extra_facts={"session_pct_change", "prev_close", "close"} makes
-    # those three names declarable alongside the metric names, so the narrative may quote the
-    # session's own close-to-close move and prices, not only the five-day verified metrics.
+    # extra_facts={"session_pct_change", "prev_close", "close"} makes those three names
+    # declarable alongside the metric names, so the narrative may quote the session's own
+    # close-to-close move and prices, not only the five-day verified metrics.
     from tests.unit.test_grounding import good_notes
     from nasdaq_agent.agent.tools.compose import make_compose_report
     from nasdaq_agent.report.schemas import DeclaredMetric, Narrative
@@ -355,8 +365,8 @@ def test_compose_allows_session_and_price_declarations(ready, deps):
     assert out["composed"] and not out["template_prose"]
 
 def test_compose_refuses_once_sent(ready, deps):
-    # Review fix (Important): a finished stage must close. Once send_email has succeeded,
-    # compose_report must refuse rather than silently redo work nobody will read.
+    # A finished stage must close. Once send_email has succeeded, compose_report must refuse
+    # rather than silently redo work nobody will read.
     from nasdaq_agent.agent.tools.compose import make_compose_report
     from nasdaq_agent.agent.tools.send import make_send_email
     _verified(ready, deps)
@@ -367,9 +377,9 @@ def test_compose_refuses_once_sent(ready, deps):
     assert msg.startswith("ERROR") and "precondition" in msg
 
 def test_compose_flags_uncited_news_when_headlines_empty(ctx, deps):
-    # Review fix (Important): with no headlines to cite, a non-empty news_paragraph is itself
-    # a finding -- check_grounding's own citation loop is skipped entirely when there are no
-    # headlines, so nothing else would ever catch uncited prose in this situation.
+    # With no headlines to cite, a non-empty news_paragraph is itself a finding --
+    # check_grounding's own citation loop is skipped entirely when there are no headlines, so
+    # nothing else would ever catch uncited text in this situation.
     from nasdaq_agent.agent.tools.session import make_resolve_session
     from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
     from nasdaq_agent.agent.tools.history import make_get_price_history
@@ -386,9 +396,9 @@ def test_compose_flags_uncited_news_when_headlines_empty(ctx, deps):
     assert msg.startswith("ERROR") and "no headlines were fetched" in msg
 
 def test_compose_adds_news_not_fetched_degradation_once(ctx, deps):
-    # Review fix (Important): when get_news was never called at all, add the degradation once
-    # -- before rendering -- not once per compose_report call (a rewrite loop must not pile up
-    # duplicate copies of the same note).
+    # When get_news was never called at all, add the degradation once -- before rendering -- not
+    # once per compose_report call (a rewrite loop must not pile up duplicate copies of the same
+    # note).
     from nasdaq_agent.agent.tools.session import make_resolve_session
     from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
     from nasdaq_agent.agent.tools.history import make_get_price_history
@@ -407,8 +417,8 @@ def test_compose_adds_news_not_fetched_degradation_once(ctx, deps):
     assert ctx.degradations.count("news was not fetched") == 1
 
 def test_compose_defers_news_not_fetched_degradation_to_render_time(ctx, deps):
-    # Review fix (folded, this round): the degradation is decided inside _finish, at render
-    # time -- a rejected call that never renders must not add it prematurely.
+    # The degradation is decided inside _finish, at render time -- a rejected call that never
+    # renders must not add it prematurely.
     from nasdaq_agent.agent.tools.session import make_resolve_session
     from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
     from nasdaq_agent.agent.tools.history import make_get_price_history
@@ -423,9 +433,9 @@ def test_compose_defers_news_not_fetched_degradation_to_render_time(ctx, deps):
     assert "news was not fetched" not in ctx.degradations
 
 def test_compose_no_news_degradation_after_failed_then_successful_source(ctx, deps):
-    # B1 (the confirmed review bug): get_news's auto chain fails one named source and succeeds on
-    # the next. _finish derives the news degradation from the final state, so no stale
-    # "news unavailable from every source" survives once headlines are present.
+    # get_news's auto chain fails one named source and succeeds on the next. _finish derives the
+    # news degradation from the final state, so no stale "news unavailable from every source"
+    # survives once headlines are present.
     from nasdaq_agent.agent.tools.session import make_resolve_session
     from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
     from nasdaq_agent.agent.tools.history import make_get_price_history
@@ -485,7 +495,7 @@ def test_two_failed_news_sources_are_named_as_a_plain_list(ctx, deps):
             "Yahoo Finance only.\n") in text
 
 def test_compose_sentiment_unavailable_when_headlines_present_without_sentiment(ready, deps):
-    # B1: headlines were fetched (the `ready` fixture) but no sentiment was recorded, so the report
+    # Headlines were fetched (the `ready` fixture) but no sentiment was recorded, so the report
     # degrades with a "sentiment unavailable" note.
     from nasdaq_agent.agent.tools.compose import make_compose_report
     _verified(ready, deps)
@@ -493,7 +503,7 @@ def test_compose_sentiment_unavailable_when_headlines_present_without_sentiment(
     assert out["composed"] and "sentiment unavailable" in ready.degradations
 
 def test_compose_no_sentiment_degradation_without_headlines(ctx, deps):
-    # B1: a missing sentiment is only a decoration when there were headlines to assess.
+    # A missing sentiment is only a decoration when there were headlines to assess.
     from nasdaq_agent.agent.tools.session import make_resolve_session
     from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
     from nasdaq_agent.agent.tools.history import make_get_price_history
@@ -507,7 +517,7 @@ def test_compose_no_sentiment_degradation_without_headlines(ctx, deps):
     assert out["composed"] and "sentiment unavailable" not in ctx.degradations
 
 def test_compose_chart_error_degrades_without_crashing(ready, deps, monkeypatch, caplog):
-    # B1: a chart error must never crash compose. The report renders and the email builds with no
+    # A chart error must never crash compose. The report renders and the email builds with no
     # inline image, chart_path is None, and "chart unavailable" is recorded so finalize exits 2.
     from nasdaq_agent.agent.tools import compose as compose_mod
     from nasdaq_agent.agent.tools.compose import make_compose_report
@@ -526,7 +536,7 @@ def test_compose_chart_error_degrades_without_crashing(ready, deps, monkeypatch,
     assert sent["sent"]
 
 def test_compose_refuses_once_composed(ready, deps):
-    # B2: a finished stage must close. Once composed, compose_report refuses (before any rewrite is
+    # A finished stage must close. Once composed, compose_report refuses (before any rewrite is
     # counted), in the same style as the other tools' precondition guards.
     from nasdaq_agent.agent.tools.compose import make_compose_report
     _verified(ready, deps)
@@ -539,7 +549,7 @@ def test_compose_refuses_once_composed(ready, deps):
     assert ready.compose_rewrites == rewrites_after_success  # the refusal did not count a rewrite
 
 def test_compose_rewrite_count_wording_is_grammatical(ready, deps):
-    # B2: "2 rewrites left" then "1 rewrite left" -- never "1 rewrites left".
+    # "2 rewrites left" then "1 rewrite left" -- never "1 rewrites left".
     from nasdaq_agent.agent.tools.compose import make_compose_report
     _verified(ready, deps)
     bad = {**_good_args(), "declared_metrics": [{"name": "cumulative_return_pct", "value": 12.0}]}
@@ -550,9 +560,9 @@ def test_compose_rewrite_count_wording_is_grammatical(ready, deps):
     assert second.startswith("ERROR") and "1 rewrite left" in second and "1 rewrites left" not in second
 
 def test_compose_exempts_session_year_from_grounding(ready, deps):
-    # Review fix (Critical): compose_report passes exempt_years={session_year, session_year -
-    # 1} from ctx.session.date, so the model may write about the session's own year (and the
-    # year before it) without declaring it as a number.
+    # compose_report passes exempt_years={session_year, session_year - 1} from
+    # ctx.session.date, so the model may write about the session's own year (and the year
+    # before it) without declaring it as a number.
     from tests.unit.test_grounding import good_notes
     from nasdaq_agent.agent.tools.compose import make_compose_report
     from nasdaq_agent.report.schemas import Narrative, DeclaredMetric
@@ -575,9 +585,9 @@ def test_compose_does_not_exempt_an_unrelated_year(ready, deps):
     assert msg.startswith("ERROR")
 
 def test_compose_allows_previous_year_reference(ready, deps):
-    # Fix round 3, item 6: exempt_years={session_year, session_year - 1} must cover the
-    # previous year too, not only the session's own year -- session date is 2026-09-24, so
-    # "began in 2025" must be composed, not rejected.
+    # exempt_years={session_year, session_year - 1} must cover the previous year too, not only
+    # the session's own year -- session date is 2026-09-24, so "began in 2025" must be
+    # composed, not rejected.
     from tests.unit.test_grounding import good_notes
     from nasdaq_agent.agent.tools.compose import make_compose_report
     from nasdaq_agent.report.schemas import Narrative, DeclaredMetric
@@ -612,9 +622,9 @@ def test_send_refuses_when_marker_is_sending(ready, deps):
     assert msg.startswith("ERROR") and "unknown" in msg and not list(deps.run_dir.outbox_dir.glob("*.eml"))
 
 def test_send_writes_sent_eml_copy_after_success(ready, deps):
-    # Review fix (Important): a fixed-name copy of exactly what was delivered lives in the run
-    # directory itself, independent of the transport (SmtpTransport writes nothing locally;
-    # FileTransport's own copy is under a timestamped name in the outbox, not this well-known path).
+    # A fixed-name copy of exactly what was delivered lives in the run directory itself,
+    # independent of the transport (SmtpTransport writes nothing locally; FileTransport's own
+    # copy is under a timestamped name in the outbox, not this well-known path).
     import email as email_lib
     from nasdaq_agent.agent.tools.compose import make_compose_report
     from nasdaq_agent.agent.tools.send import make_send_email
@@ -626,9 +636,9 @@ def test_send_writes_sent_eml_copy_after_success(ready, deps):
     assert email_lib.message_from_bytes(sent_eml.read_bytes())["To"] == "r@example.com"
 
 def test_send_still_marks_sent_when_sent_eml_write_fails(ready, deps, caplog):
-    # Review fix (folded): the sent.eml copy is best-effort. ctx.email / ctx.progress.sent are
-    # updated and saved BEFORE attempting it, so a failure writing that convenience copy must
-    # never leave a message that really was sent looking unsent -- only a logged warning.
+    # The sent.eml copy is best-effort. ctx.email / ctx.progress.sent are updated and saved
+    # BEFORE attempting it, so a failure writing that convenience copy must never leave a
+    # message that really was sent looking unsent -- only a logged warning.
     from nasdaq_agent.agent.tools.compose import make_compose_report
     from nasdaq_agent.agent.tools.send import make_send_email
     from nasdaq_agent.email.idempotency import SendMarker
@@ -641,9 +651,9 @@ def test_send_still_marks_sent_when_sent_eml_write_fails(ready, deps, caplog):
     assert any("sent.eml" in r.message for r in caplog.records)
 
 def test_send_catches_up_progress_sent_from_marker(ready, deps):
-    # Review fix (folded): a resumed run can find the marker already "sent" from an earlier
-    # process, before this in-memory ctx was ever marked -- the already-sent branch must catch
-    # progress.sent up rather than leaving it False for a message that really was delivered.
+    # A resumed run can find the marker already "sent" from an earlier process, before this
+    # in-memory ctx was ever marked -- the already-sent branch must catch progress.sent up
+    # rather than leaving it False for a message that really was delivered.
     from nasdaq_agent.agent.tools.compose import make_compose_report
     from nasdaq_agent.agent.tools.send import make_send_email
     from nasdaq_agent.email.idempotency import SendMarker
@@ -657,10 +667,10 @@ def test_send_catches_up_progress_sent_from_marker(ready, deps):
     assert out["already_sent"] and ready.progress.sent
 
 def test_send_refuses_without_transport_before_marking_sending(ready, deps):
-    # Review fix (Folded Minor): checking deps.transport is not None must happen BEFORE
-    # marker.begin(), so a missing transport can never leave a "sending" marker behind for a
-    # message that was never actually attempted (SendMarker has no way back from "sending"
-    # except a send that completes or fails through the transport itself).
+    # Checking deps.transport is not None must happen BEFORE marker.begin(), so a missing
+    # transport can never leave a "sending" marker behind for a message that was never actually
+    # attempted (SendMarker has no way back from "sending" except a send that completes or fails
+    # through the transport itself).
     from nasdaq_agent.agent.tools.compose import make_compose_report
     from nasdaq_agent.agent.tools.send import make_send_email
     from nasdaq_agent.email.idempotency import SendMarker
@@ -672,8 +682,8 @@ def test_send_refuses_without_transport_before_marking_sending(ready, deps):
     assert not (deps.run_dir.path / "sent.eml").exists()
 
 def test_send_email_precondition_is_recorded(ready, deps):
-    # Controller correction c: a precondition refusal must be recorded via record_call before
-    # it is returned, matching every Task 18 tool. send_email is called with nothing composed.
+    # A precondition refusal must be recorded via record_call before it is returned, as every
+    # other tool does. send_email is called with nothing composed.
     from nasdaq_agent.agent.tools.send import make_send_email
     msg = make_send_email(ready, deps).invoke({})
     assert msg.startswith("ERROR") and "precondition" in msg
@@ -681,9 +691,9 @@ def test_send_email_precondition_is_recorded(ready, deps):
     assert any(e["tool"] == "send_email" for e in entries)
 
 def test_every_call_is_recorded_exactly_once_whatever_the_outcome(ready, deps):
-    # Amendment: every return path in these tools -- refusals and terminal guards included --
-    # must go through record_call exactly once, so the audit trail never silently drops a call
-    # or double-records one. Drive a mixed sequence (a precondition refusal, a non-precondition
+    # Every return path in these tools -- refusals and terminal guards included -- must go
+    # through record_call exactly once, so the audit trail never silently drops a call or
+    # double-records one. Drive a mixed sequence (a precondition refusal, a non-precondition
     # refusal, a success, and give_up) and check the log grew by exactly one line per call, in
     # order, naming the right tool each time.
     from nasdaq_agent.agent.tools.give_up import make_give_up
@@ -788,6 +798,49 @@ def test_an_agreeing_price_check_is_background_in_the_footer(ready, deps):
     make_compose_report(ready, deps).invoke(_good_args())
     text = (deps.run_dir.path / "report.txt").read_text()
     assert f"  {detail}\n" in _footer(text) and detail not in _above_the_metrics(text)
+
+def test_compose_keeps_the_headlines_of_a_news_source_asked_by_name(ctx, deps):
+    """get_news for one named source leaves the others untried, so the news step stays open. The report must still use
+    that source's headlines, and must not say that every news source failed."""
+    from nasdaq_agent.agent.tools.session import make_resolve_session
+    from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
+    from nasdaq_agent.agent.tools.history import make_get_price_history
+    from nasdaq_agent.agent.tools.news import make_get_news
+    from nasdaq_agent.agent.tools.compose import make_compose_report
+    from nasdaq_agent.email.transports import FileTransport
+    from nasdaq_agent.report.schemas import JudgeVerdict
+    from tests.unit.test_grounding import headlines
+    deps.news_sources = [fakes.FakeNewsSource("massive", headlines=headlines()), fakes.FakeNewsSource("yfinance")]
+    deps.transport = FileTransport(deps.run_dir.outbox_dir)
+    deps.judge = lambda v, h, n, extra_facts=None, session_facts=None: JudgeVerdict(faithful=True)
+    make_resolve_session(ctx, deps).invoke({})
+    for tool in (make_find_top_gainer, make_get_price_history):
+        tool(ctx, deps).invoke({"source": "auto"})
+    make_get_news(ctx, deps).invoke({"source": "massive"})  # yfinance is left untried
+    _verified(ctx, deps)
+    out = make_compose_report(ctx, deps).invoke(_good_args())
+    assert not out.startswith("ERROR"), out
+    assert "Acme files for FDA review of lead drug candidate" in (deps.run_dir.path / "report.txt").read_text()
+    assert not any("news" in note for note in ctx.degradations)
+
+def test_a_news_source_asked_by_name_that_had_nothing_is_not_reported_as_failed(ctx, deps):
+    from nasdaq_agent.agent.tools.session import make_resolve_session
+    from nasdaq_agent.agent.tools.gainer import make_find_top_gainer
+    from nasdaq_agent.agent.tools.history import make_get_price_history
+    from nasdaq_agent.agent.tools.news import make_get_news
+    from nasdaq_agent.agent.tools.compose import make_compose_report
+    from nasdaq_agent.report.schemas import JudgeVerdict
+    deps.news_sources = [fakes.FakeNewsSource("massive"), fakes.FakeNewsSource("yfinance")]
+    deps.judge = lambda v, h, n, extra_facts=None, session_facts=None: JudgeVerdict(faithful=True)
+    make_resolve_session(ctx, deps).invoke({})
+    for tool in (make_find_top_gainer, make_get_price_history):
+        tool(ctx, deps).invoke({"source": "auto"})
+    make_get_news(ctx, deps).invoke({"source": "massive"})  # answers with no headlines; yfinance is left untried
+    _verified(ctx, deps)
+    args = {**_good_args(), "news_paragraph": "", "citations": [], "headline_notes": []}
+    out = make_compose_report(ctx, deps).invoke(args)
+    assert not out.startswith("ERROR"), out
+    assert "news unavailable from every source" not in ctx.degradations
 
 def _record_sentiment(ctx, deps):
     from nasdaq_agent.agent.tools.sentiment import make_record_sentiment
@@ -905,8 +958,8 @@ def test_every_fixed_degradation_note_has_plain_words_for_the_email(note):
     assert words != note and words[0].isupper() and words.endswith(".") and "_" not in words
 
 def test_the_template_problem_names_no_rewrite_count():
-    # B3: template prose starts once the allowed rewrites are used up, so its note must carry no count that can go
-    # stale when MAX_REWRITES changes (it once said "twice").
+    # The fixed-template written summary takes over once the allowed rewrites are used up, so its note must carry no
+    # count that can go stale when MAX_REWRITES changes (it once said "twice").
     from nasdaq_agent.agent.tools.compose import PROBLEM_TEXTS
     words = PROBLEM_TEXTS["narrative is template-generated after grounding failures"]
     assert "twice" not in words and not any(ch.isdigit() for ch in words)

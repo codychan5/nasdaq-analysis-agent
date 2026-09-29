@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
@@ -15,6 +15,9 @@ REGULAR_CLOSE_HOUR = 16
 # truncates the window. Deliberately generous; the caller slices the exact `count` sessions out.
 CALENDAR_DAYS_PER_SESSION = 3
 SESSION_LOOKBACK_PAD_DAYS = 10
+# A run for AGENT_SESSION_DATE is pinned to this New York time on that day: half an hour after the regular close, the
+# scheduler's default trigger (AGENT_SCHEDULE_CRON "30 16 * * 1-5"), so it sees the news a scheduled run would have.
+SESSION_DATE_CLOCK_TIME = time(16, 30)
 
 
 class CalendarError(RuntimeError):
@@ -68,6 +71,19 @@ def resolve_last_completed_session(now: datetime) -> TradingSession:
     row = completed.iloc[-1]
     close_et = row["market_close"].tz_convert(EASTERN)
     return TradingSession(date=row.name.date(), label="official close", early_close=close_et.hour < REGULAR_CLOSE_HOUR)
+
+
+def clock_for_session_date(day: date, now: datetime) -> datetime:
+    """The pinned clock for a run that reports on `day`: SESSION_DATE_CLOCK_TIME, New York time, that day. Raises
+    CalendarError when `day` is not a NASDAQ trading day, or when its session has not closed by `now`."""
+    try:
+        previous_session_dates(day, 1)
+    except CalendarError:
+        raise CalendarError(f"{day} is not a NASDAQ trading day") from None
+    if resolve_last_completed_session(now).date < day:
+        raise CalendarError(f"the {day} session has not closed yet; leave AGENT_SESSION_DATE empty to report the last "
+                            "completed session")
+    return datetime.combine(day, SESSION_DATE_CLOCK_TIME, tzinfo=EASTERN)
 
 
 def is_market_closed(now: datetime) -> bool:

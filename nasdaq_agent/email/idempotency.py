@@ -11,10 +11,11 @@ log = logging.getLogger("nasdaq_agent.email")
 
 # The states a marker writes: begin() creates it as "sending"; complete() and fail() move it on.
 WRITTEN_STATES = frozenset({"sending", "sent", "failed"})
-# Final fix wave A5. "sending": an attempt began and never recorded its outcome (the process may have died on either
-# side of the actual delivery). "unknown": the marker exists but is not a JSON object with a state this module writes,
-# which only a crash inside begin() -- after the exclusive create, before the content is on disk -- or a stray edit can
-# leave. Either way the transport may or may not have accepted the message, so nothing may send it again.
+# The states in which a send's outcome is not known. "sending": an attempt began and never recorded its outcome (the
+# process may have died on either side of the actual delivery). "unknown": the marker exists but is not a JSON object
+# with a state this module writes, which only a crash inside begin() -- after the exclusive create, before the content
+# is on disk -- or a stray edit can leave. Either way the transport may or may not have accepted the message, so nothing
+# may send it again.
 OUTCOME_UNKNOWN_STATES = frozenset({"sending", "unknown"})
 # What open() uses, so the process umask applies as it does to the run's other artefacts. begin() and every update
 # create their file with it, so replacing the marker never changes its permissions.
@@ -44,10 +45,10 @@ class SendMarker:
     """Written as `sending` before the transport call and `sent` or `failed` after. A resume that finds `sending`, or
     a marker it cannot read (`unknown`), cannot know whether the server accepted the message and must not send again.
 
-    Final fix wave A5: every write is durable and atomic. begin() creates the file exclusively (O_EXCL: of any number
-    of racing callers exactly one wins) and fsyncs it. An update writes a temp file in the same directory, fsyncs it
-    and os.replace()s it over the marker, so a reader sees the previous marker or the new one, never a torn one. Both
-    then fsync the directory, best-effort, so the new entry survives a power loss too.
+    Every write is durable and atomic. begin() creates the file exclusively (O_EXCL: of any number of racing callers
+    exactly one wins) and fsyncs it. An update writes a temp file in the same directory, fsyncs it and os.replace()s it
+    over the marker, so a reader sees the previous marker or the new one, never a torn one. Both then fsync the
+    directory, best-effort, so the new entry survives a power loss too.
     """
 
     def __init__(self, path: Path):

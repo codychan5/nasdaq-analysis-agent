@@ -24,9 +24,9 @@ def test_file_transport_writes_eml(tmp_path):
     assert email.message_from_bytes(files[0].read_bytes())["Subject"] == "Subj"
 
 def test_file_transport_raises_send_error_not_oserror_when_outbox_path_is_a_file(tmp_path):
-    """Fix round 1, item 7: transport contract is that every delivery failure surfaces as
-    SendError -- an existing regular file at the outbox path makes mkdir(exist_ok=True) raise
-    FileExistsError (an OSError), which must come out as SendError, not the raw OSError."""
+    """The transport contract is that every delivery failure surfaces as SendError -- an existing regular file at the
+    outbox path makes mkdir(exist_ok=True) raise FileExistsError (an OSError), which must come out as SendError, not the
+    raw OSError."""
     from nasdaq_agent.email.message import build_message
     from nasdaq_agent.email.transports import FileTransport, SendError
     outbox_path = tmp_path / "outbox"

@@ -11,19 +11,19 @@ from ...email.transports import Transport
 from ...report.judge import JudgeFn
 from ...sandbox.runner import CodeRunner
 from ...sources.base import GainerSource, HistorySource, NewsSource
-from ...universe import Universe
+from ...universe import SessionUniverse
 from ..context import RunContext
 
 log = logging.getLogger("nasdaq_agent.tools")
-# Tasks 22+23 fix round 1, K1: decimal places kept in floats a tool shows the model. numpy builds can differ in the
-# last digit across platforms, which would change the next prompt and miss the replay cache.
+# Decimal places kept in floats a tool shows the model. numpy builds can differ in the last digit across platforms,
+# which would change the next prompt and miss the replay cache.
 MODEL_VISIBLE_DECIMALS = 6
 
 
 @dataclass
 class Deps:
     settings: Settings
-    universe: Universe
+    universe: SessionUniverse
     gainer_sources: list[GainerSource]
     history_sources: list[HistorySource]
     news_sources: list[NewsSource]

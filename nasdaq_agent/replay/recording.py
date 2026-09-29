@@ -1,5 +1,5 @@
-"""The record command's cassette lifecycle (correction e; staging since fix round 1, K7; the content guard since fix
-round 2).
+"""The record command's cassette lifecycle: staging a recording beside the cassette under a lock, the content guard,
+and sealing -- the secret scan, the manifest, then the swap that replaces the previous cassette.
 
 A recording is written into a staging directory beside the cassette, under an exclusive lock. It is sealed -- manifest
 written, then swapped in -- only after a run that finished with exit 0 or 2, with no judge failure, and with no
@@ -39,7 +39,7 @@ STAGING_INFIX = ".recording-"
 BACKUP_SUFFIX = ".previous"
 LOCK_SUFFIX = ".lock"
 # The names this module creates beside a cassette -- staging, backup and lock -- accepted inside a cassette directory
-# too (fix round 2). Accepting a name never makes it deletable: only CASSETTE_ENTRIES are ever moved or removed.
+# too. Accepting a name never makes it deletable: only CASSETTE_ENTRIES are ever moved or removed.
 OWN_NAME = re.compile(rf"\.[^/]+(?:{re.escape(STAGING_INFIX)}{RUN_ID_PATTERN.pattern}(?:{re.escape(BACKUP_SUFFIX)})?"
                       rf"|{re.escape(LOCK_SUFFIX)})")
 PERCENT_ESCAPE = re.compile(r"%[0-9A-F]{2}")
@@ -139,9 +139,9 @@ def _contents_problem(directory: Path, *, allow_own_names: bool) -> str | None:
 
 
 def check_cassette_directory(final: Path) -> Path:
-    """The content guard (fix round 2): returns the resolved cassette path, or raises CassetteDirectoryRefused naming
-    the first offending entry. A missing or empty directory is accepted, and so is a leftover cassette -- entry files
-    but no manifest. Anything else is refused before any change: a name-only check let a package directory holding a
+    """The content guard: returns the resolved cassette path, or raises CassetteDirectoryRefused naming the first
+    offending entry. A missing or empty directory is accepted, and so is a leftover cassette -- entry files but no
+    manifest. Anything else is refused before any change: a name-only check would let a package directory holding a
     sources/ subpackage, or a web app's manifest.json, be swapped out and deleted."""
     final = _resolved(final)
     if not final.exists():
@@ -164,8 +164,8 @@ def start_recording(final: Path, run_id: str) -> Path:
 
 
 def acquire_recording_lock(final: Path) -> Path:
-    """One recording at a time per cassette (fix round 2, item 5): an exclusive lock file, created with O_EXCL, beside
-    the resolved cassette directory. The caller holds it for the whole recording and releases it in a finally."""
+    """One recording at a time per cassette: an exclusive lock file, created with O_EXCL, beside the resolved cassette
+    directory. The caller holds it for the whole recording and releases it in a finally."""
     lock = lock_path(final)
     lock.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -218,7 +218,7 @@ def _encoded_forms(secret: str) -> set[str]:
     """How a secret could appear inside a cassette file: raw or with its slashes escaped as \\/; JSON-escaped once (a
     string in our own JSON) or twice (a recorded JSON body stored inside our JSON), with or without non-ASCII
     escaping, each with or without escaped slashes; or percent-encoded -- quote() with "/" left raw as well as fully
-    encoded, quote_plus() with "+" for spaces -- with upper- or lower-case escapes (fix rounds 1 and 2)."""
+    encoded, quote_plus() with "+" for spaces -- with upper- or lower-case escapes."""
     forms = {secret, secret.replace("/", "\\/")}
     for ensure_ascii in (True, False):
         for base in (secret, secret.replace("/", "\\/")):
@@ -270,7 +270,7 @@ def _promote(staging: Path, final: Path) -> None:
     Before anything moves, the whole directory passes the content guard again; each previous entry is re-verified
     immediately before it is moved aside, and the moved-aside backup once more immediately before it is deleted. A
     failed check or a failed move rolls everything back and raises. Once the new cassette is live, trouble removing the
-    backup or the staging directory is only a warning (fix round 2, item 3)."""
+    backup or the staging directory is only a warning."""
     final = check_cassette_directory(final)
     final.mkdir(parents=True, exist_ok=True)
     backup = _backup_dir(staging)

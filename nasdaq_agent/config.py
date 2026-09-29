@@ -1,5 +1,5 @@
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, get_args
@@ -9,6 +9,7 @@ from pydantic import Field, NonNegativeInt, PositiveFloat, PositiveInt, SecretSt
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .cron import cron_trigger, next_fire_time
+from .metrics import RETURNS_PER_WINDOW
 
 # A single plain address: exactly one "@", no whitespace or newlines (this also blocks
 # header injection such as a trailing "\nBcc: ..."), and at least one "." in the domain part.
@@ -18,6 +19,9 @@ SINGLE_EMAIL_ADDRESS_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 CONTACT_EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 PRINTABLE_ASCII_LINE_PATTERN = re.compile(r"[\x20-\x7e]+")
 SEC_USER_AGENT_MAX_CHARS = 200
+# AGENT_SESSION_DATE is written as a calendar date and nothing else: pydantic would also read a bare number as a Unix
+# timestamp, and a day-first or month-first date is ambiguous.
+SESSION_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 class Mode(StrEnum):
@@ -58,8 +62,10 @@ class Settings(BaseSettings):
     llm_timeout_seconds: PositiveFloat = 90.0
     llm_max_retries: NonNegativeInt = 2
     # Largest reply a model call may produce. OpenRouter reserves credit for it up front, and an uncapped call failed a
-    # live run with "requires more credits, or fewer max_tokens". Reasoning models think within it, so it leaves room.
-    llm_max_output_tokens: PositiveInt = 8192
+    # live run with "requires more credits, or fewer max_tokens". Reasoning models think within it: at 8,192, GLM-5.3's
+    # compose_report replies reached 7,920 tokens, and one run failed after three replies were cut off. The cap only
+    # ends a reply that would run past it, so a higher one costs nothing on the others.
+    llm_max_output_tokens: PositiveInt = 16384
     max_model_calls: int = 25
     max_tool_calls: int = 25
     max_code_runs: int = 6
@@ -80,10 +86,10 @@ class Settings(BaseSettings):
     news_lookback_days: int = Field(default=3, ge=1, le=90)
     benchmark_symbol: str = "SPY"
     artifacts_dir: Path = Path("./runs")
-    # Record writes, and replay reads, HTTP and model responses here (Task 22). Committed, so never a secret in it.
+    # Record writes, and replay reads, HTTP and model responses here. Committed, so never a secret in it.
     cassette_dir: Path = Path("./fixtures/cassettes")
     # Read by RunDeadlineMiddleware, which ends the agent loop once an invocation has run this long; a resume starts
-    # a fresh deadline, and the call caps bound the whole run (final fix wave A2).
+    # a fresh deadline, and the call caps bound the whole run.
     run_deadline_seconds: PositiveInt = 600
     http_connect_timeout: float = 5.0
     http_read_timeout: float = 10.0
@@ -95,6 +101,9 @@ class Settings(BaseSettings):
     # Turns on the SEC EDGAR news source: the User-Agent its requests declare, a name and a contact email. It holds a
     # person's address, so it is kept like a key: hidden from reprs, redacted from logs, sent only to SEC.
     sec_user_agent: SecretStr | None = None
+    # The trading day to report on, as YYYY-MM-DD, to run the agent for a past session: the run's clock is pinned to
+    # 16:30 New York time that day. Empty, the default, reports the last completed session. Never used by schedule.
+    session_date: date | None = None
 
     # Provider and tracing keys keep their native names, so no prefix.
     google_api_key: SecretStr | None = Field(default=None, validation_alias="GOOGLE_API_KEY")
@@ -139,11 +148,25 @@ class Settings(BaseSettings):
             raise ValueError("sec_user_agent must include a contact email, as SEC asks: 'Your Name you@example.com'")
         return v
 
+    @field_validator("session_date", mode="before")
+    @classmethod
+    def _session_date_must_be_yyyy_mm_dd(cls, v):
+        """Blank means none. Otherwise only YYYY-MM-DD; pydantic then checks it is a real date."""
+        if not isinstance(v, str):
+            return v
+        text = v.strip()
+        if not text:
+            return None
+        if not SESSION_DATE_PATTERN.fullmatch(text):
+            raise ValueError("session_date must be a date written as YYYY-MM-DD, such as 2026-07-08")
+        return text
+
     @field_validator("email_to")
     @classmethod
     def _email_to_must_be_single_address(cls, v: str) -> str:
-        """Reject anything but a single plain address; also blocks header injection via newlines."""
-        if not SINGLE_EMAIL_ADDRESS_PATTERN.match(v):
+        """Reject anything but a single plain address; also blocks header injection via newlines. fullmatch, because
+        with match the pattern's "$" also accepts one trailing newline, which makes every send fail."""
+        if not SINGLE_EMAIL_ADDRESS_PATTERN.fullmatch(v):
             raise ValueError("email_to must be a single plain email address")
         return v
 
@@ -151,8 +174,18 @@ class Settings(BaseSettings):
     @classmethod
     def _smtp_from_must_be_single_address(cls, v: str | None) -> str | None:
         """Runs after `_blank_smtp_to_none`; a blank value is already None here and skips the check."""
-        if v is not None and not SINGLE_EMAIL_ADDRESS_PATTERN.match(v):
+        if v is not None and not SINGLE_EMAIL_ADDRESS_PATTERN.fullmatch(v):
             raise ValueError("smtp_from must be a single plain email address")
+        return v
+
+    @field_validator("lookback_sessions")
+    @classmethod
+    def _lookback_must_match_the_metrics(cls, v: int) -> int:
+        """The metrics and their verifier are defined over exactly RETURNS_PER_WINDOW daily returns, so any other
+        window would fail every run at verification; refuse it when the settings load instead."""
+        if v != RETURNS_PER_WINDOW:
+            raise ValueError(f"lookback_sessions must be {RETURNS_PER_WINDOW}: the metrics are defined over exactly "
+                             f"{RETURNS_PER_WINDOW} daily returns")
         return v
 
     @field_validator("schedule_timezone")
@@ -195,9 +228,9 @@ class Settings(BaseSettings):
 
     @classmethod
     def secret_field_names(cls) -> frozenset[str]:
-        """Fix round 1, item 4: every field whose annotation includes SecretStr (direct, or via
-        `SecretStr | None`), found by introspecting the model instead of hand-listing field names
-        in a second place -- a future SecretStr field is picked up automatically."""
+        """Every field whose annotation includes SecretStr (direct, or via `SecretStr | None`), found by
+        introspecting the model instead of hand-listing field names in a second place -- a future SecretStr
+        field is picked up automatically."""
         def _mentions_secret_str(annotation: Any) -> bool:
             if annotation is SecretStr:
                 return True
